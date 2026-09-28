@@ -1,0 +1,2687 @@
+This file is a merged representation of the entire codebase, combined into a single document by Repomix.
+
+<file_summary>
+This section contains a summary of this file.
+
+<purpose>
+This file contains a packed representation of the entire repository's contents.
+It is designed to be easily consumable by AI systems for analysis, code review,
+or other automated processes.
+</purpose>
+
+<file_format>
+The content is organized as follows:
+1. This summary section
+2. Repository information
+3. Directory structure
+4. Repository files (if enabled)
+5. Multiple file entries, each consisting of:
+  - File path as an attribute
+  - Full contents of the file
+</file_format>
+
+<usage_guidelines>
+- This file should be treated as read-only. Any changes should be made to the
+  original repository files, not this packed version.
+- When processing this file, use the file path to distinguish
+  between different files in the repository.
+- Be aware that this file may contain sensitive information. Handle it with
+  the same level of security as you would the original repository.
+</usage_guidelines>
+
+<notes>
+- Some files may have been excluded based on .gitignore rules and Repomix's configuration
+- Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
+- Files matching patterns in .gitignore are excluded
+- Files matching default ignore patterns are excluded
+- Files are sorted by Git change count (files with more changes are at the bottom)
+</notes>
+
+</file_summary>
+
+<directory_structure>
+api/
+  app/
+    models/
+      __init__.py
+      schemas.py
+    rag/
+      __init__.py
+      generate.py
+      ingest.py
+      retrieve.py
+    routers/
+      __init__.py
+      interventions.py
+    __init__.py
+    config.py
+    main.py
+    store.py
+  knowledge/
+    arts/
+      color.md
+      constraints.md
+      negative-space.md
+    history/
+      libraries.md
+      printing-press.md
+      silk-roads.md
+    philosophy/
+      attention.md
+      examined-life.md
+      thought-experiments.md
+    science/
+      feedback-loops.md
+      photosynthesis.md
+      working-memory.md
+    technology/
+      apis.md
+      caching.md
+      version-control.md
+  scripts/
+    ingest.py
+  .env.example
+  requirements.txt
+extension/
+  src/
+    background/
+      index.ts
+    content/
+      index.ts
+    intervention/
+      InterventionApp.tsx
+      main.tsx
+    options/
+      main.tsx
+      OptionsApp.tsx
+    popup/
+      main.tsx
+      PopupApp.tsx
+    shared/
+      api.ts
+      constants.ts
+      fixture.ts
+      messages.ts
+      scoring.ts
+      storage.ts
+      types.ts
+      ui.css
+    vite-env.d.ts
+  intervention.html
+  manifest.config.ts
+  options.html
+  package.json
+  popup.html
+  tsconfig.json
+  vite.config.ts
+.env.example
+.gitignore
+README.md
+</directory_structure>
+
+<files>
+This section contains the contents of the repository's files.
+
+<file path="api/app/models/__init__.py">
+
+</file>
+
+<file path="api/app/models/schemas.py">
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class GenerateRequest(BaseModel):
+    interests: list[str] = Field(min_length=1)
+    duration_minutes: int = Field(alias="durationMinutes", ge=3, le=5)
+
+    model_config = ConfigDict(populate_by_name=True, serialize_by_alias=True)
+
+
+class Choice(BaseModel):
+    id: str
+    text: str
+
+
+class Question(BaseModel):
+    id: str
+    prompt: str
+    choices: list[Choice]
+
+
+class GenerateResponse(BaseModel):
+    id: str
+    title: str
+    passage_markdown: str = Field(alias="passageMarkdown")
+    estimated_minutes: int = Field(alias="estimatedMinutes")
+    questions: list[Question]
+
+    model_config = ConfigDict(populate_by_name=True, serialize_by_alias=True)
+
+
+class GradeRequest(BaseModel):
+    answers: dict[str, str]
+
+
+class PerQuestion(BaseModel):
+    question_id: str = Field(alias="questionId")
+    correct: bool
+    correct_choice_id: str = Field(alias="correctChoiceId")
+
+    model_config = ConfigDict(populate_by_name=True, serialize_by_alias=True)
+
+
+class GradeResponse(BaseModel):
+    score_pct: int = Field(alias="scorePct")
+    correct_count: int = Field(alias="correctCount")
+    total: int
+    per_question: list[PerQuestion] = Field(alias="perQuestion")
+    xp_awarded: int = Field(alias="xpAwarded")
+
+    model_config = ConfigDict(populate_by_name=True, serialize_by_alias=True)
+</file>
+
+<file path="api/app/rag/__init__.py">
+
+</file>
+
+<file path="api/app/rag/generate.py">
+from __future__ import annotations
+
+import json
+from datetime import datetime, timedelta, timezone
+
+from openai import OpenAI
+
+from app.config import settings
+from app.rag.retrieve import retrieve
+from app.store import StoredIntervention, StoredQuestion, new_id, put
+
+WORD_TARGETS = {3: 480, 4: 640, 5: 800}
+
+
+def _client() -> OpenAI:
+    if not settings.openai_api_key:
+        raise RuntimeError("OPENAI_API_KEY is not set")
+    return OpenAI(api_key=settings.openai_api_key)
+
+
+def generate_intervention(interests: list[str], duration_minutes: int) -> StoredIntervention:
+    chunks = retrieve(interests, k=4)
+    if not chunks:
+        raise RuntimeError("Knowledge index is empty. Run: python scripts/ingest.py")
+
+    sources = "\n\n".join(
+        f"SOURCE {i + 1} (tag={c['tag']}, title={c['title']}):\n{c['text']}"
+        for i, c in enumerate(chunks)
+    )
+    words = WORD_TARGETS.get(duration_minutes, 640)
+    prompt = f"""You create a voluntary reading challenge for Cognite.
+Use ONLY facts present in the sources. If the sources are thin, say what is known and do not invent citations, studies, or statistics.
+Write a new {duration_minutes}-minute reading (~{words} words) that is engaging, clear, and self-contained.
+Then write 4 multiple-choice questions that can be answered from the passage.
+
+Return JSON with this shape:
+{{
+  "title": string,
+  "passageMarkdown": string,
+  "questions": [
+    {{
+      "id": "q1",
+      "prompt": string,
+      "choices": [{{"id": "a", "text": string}}, {{"id": "b", "text": string}}, {{"id": "c", "text": string}}, {{"id": "d", "text": string}}],
+      "answerId": "a" | "b" | "c" | "d"
+    }}
+  ]
+}}
+
+Selected interests: {", ".join(interests)}
+
+SOURCES:
+{sources}
+"""
+    response = _client().chat.completions.create(
+        model=settings.openai_chat_model,
+        response_format={"type": "json_object"},
+        messages=[
+            {
+                "role": "system",
+                "content": "You write grounded educational readings. Never claim to measure brain networks.",
+            },
+            {"role": "user", "content": prompt},
+        ],
+        temperature=0.7,
+    )
+    content = response.choices[0].message.content or "{}"
+    data = json.loads(content)
+    questions: list[StoredQuestion] = []
+    for raw in data.get("questions", []):
+        questions.append(
+            StoredQuestion(
+                id=str(raw["id"]),
+                prompt=str(raw["prompt"]),
+                choices=[{"id": c["id"], "text": c["text"]} for c in raw["choices"]],
+                answer_id=str(raw["answerId"]),
+            )
+        )
+    if not questions:
+        raise RuntimeError("Model did not return quiz questions")
+
+    item = StoredIntervention(
+        id=new_id(),
+        title=str(data.get("title") or "Reading challenge"),
+        passage_markdown=str(data.get("passageMarkdown") or ""),
+        estimated_minutes=duration_minutes,
+        questions=questions,
+        expires_at=datetime.now(timezone.utc) + timedelta(minutes=45),
+    )
+    return put(item)
+</file>
+
+<file path="api/app/rag/ingest.py">
+from __future__ import annotations
+
+import re
+from pathlib import Path
+
+import chromadb
+from chromadb.utils.embedding_functions import OpenAIEmbeddingFunction
+
+from app.config import settings
+
+COLLECTION = "cognite_knowledge"
+FRONTMATTER = re.compile(r"^---\s*\n(.*?)\n---\s*\n(.*)$", re.S)
+
+
+def _parse_frontmatter(text: str) -> tuple[dict[str, str], str]:
+    match = FRONTMATTER.match(text.strip())
+    if not match:
+        return {}, text
+    meta: dict[str, str] = {}
+    for line in match.group(1).splitlines():
+        if ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        meta[key.strip()] = value.strip().strip('"')
+    return meta, match.group(2).strip()
+
+
+def chunk_text(text: str, max_chars: int = 1800) -> list[str]:
+    paragraphs = [p.strip() for p in re.split(r"\n{2,}", text) if p.strip()]
+    chunks: list[str] = []
+    buf = ""
+    for para in paragraphs:
+        candidate = f"{buf}\n\n{para}" if buf else para
+        if buf and len(candidate) > max_chars:
+            chunks.append(buf.strip())
+            buf = para
+        else:
+            buf = candidate
+    if buf:
+        chunks.append(buf.strip())
+    return chunks
+
+
+def get_collection():
+    if not settings.openai_api_key:
+        raise RuntimeError("OPENAI_API_KEY is not set")
+    client = chromadb.PersistentClient(path=str(settings.chroma_dir))
+    embedding_fn = OpenAIEmbeddingFunction(
+        api_key=settings.openai_api_key,
+        model_name=settings.openai_embedding_model,
+    )
+    return client.get_or_create_collection(
+        name=COLLECTION,
+        embedding_function=embedding_fn,
+    )
+
+
+def ingest_knowledge(knowledge_dir: Path | None = None) -> int:
+    directory = knowledge_dir or settings.knowledge_dir
+    collection = get_collection()
+    ids: list[str] = []
+    documents: list[str] = []
+    metadatas: list[dict[str, str]] = []
+
+    for path in sorted(directory.rglob("*.md")):
+        meta, body = _parse_frontmatter(path.read_text(encoding="utf-8"))
+        tag = meta.get("tag", path.parent.name)
+        title = meta.get("title", path.stem.replace("-", " "))
+        source = meta.get("source", path.name)
+        for index, chunk in enumerate(chunk_text(body)):
+            ids.append(f"{path.stem}-{index}")
+            documents.append(f"{title}\n\n{chunk}")
+            metadatas.append(
+                {
+                    "tag": tag,
+                    "title": title,
+                    "source": source,
+                    "path": str(path.relative_to(directory)),
+                }
+            )
+
+    if not ids:
+        raise RuntimeError(f"No markdown files found in {directory}")
+
+    existing = collection.get()
+    if existing.get("ids"):
+        collection.delete(ids=existing["ids"])
+    collection.add(ids=ids, documents=documents, metadatas=metadatas)
+    return len(ids)
+</file>
+
+<file path="api/app/rag/retrieve.py">
+from app.rag.ingest import get_collection
+
+VALID_TAGS = {"technology", "science", "history", "philosophy", "arts"}
+
+
+def retrieve(interests: list[str], k: int = 4) -> list[dict[str, str]]:
+    tags = [tag for tag in interests if tag in VALID_TAGS]
+    if not tags:
+        tags = sorted(VALID_TAGS)
+    collection = get_collection()
+    query = (
+        "Write an engaging, accurate explainer for a curious adult interested in "
+        + ", ".join(tags)
+    )
+    result = collection.query(
+        query_texts=[query],
+        n_results=k,
+        where={"tag": {"$in": tags}},
+    )
+    documents = (result.get("documents") or [[]])[0]
+    metadatas = (result.get("metadatas") or [[]])[0]
+    chunks: list[dict[str, str]] = []
+    for doc, meta in zip(documents, metadatas):
+        chunks.append(
+            {
+                "text": doc,
+                "tag": str(meta.get("tag", "")),
+                "title": str(meta.get("title", "")),
+                "source": str(meta.get("source", "")),
+            }
+        )
+    return chunks
+</file>
+
+<file path="api/app/routers/__init__.py">
+
+</file>
+
+<file path="api/app/routers/interventions.py">
+from fastapi import APIRouter, HTTPException
+
+from app.models.schemas import (
+    Choice,
+    GenerateRequest,
+    GenerateResponse,
+    GradeRequest,
+    GradeResponse,
+    PerQuestion,
+    Question,
+)
+from app.rag.generate import generate_intervention
+from app.store import get
+
+router = APIRouter(prefix="/v1/interventions", tags=["interventions"])
+
+
+@router.post("", response_model=GenerateResponse, response_model_by_alias=True)
+def create_intervention(body: GenerateRequest) -> GenerateResponse:
+    try:
+        item = generate_intervention(body.interests, body.duration_minutes)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Generation failed: {exc}") from exc
+
+    return GenerateResponse(
+        id=item.id,
+        title=item.title,
+        passageMarkdown=item.passage_markdown,
+        estimatedMinutes=item.estimated_minutes,
+        questions=[
+            Question(
+                id=q.id,
+                prompt=q.prompt,
+                choices=[Choice(id=c["id"], text=c["text"]) for c in q.choices],
+            )
+            for q in item.questions
+        ],
+    )
+
+
+@router.post("/{intervention_id}/grade", response_model=GradeResponse, response_model_by_alias=True)
+def grade_intervention(intervention_id: str, body: GradeRequest) -> GradeResponse:
+    item = get(intervention_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Intervention expired or not found")
+
+    per: list[PerQuestion] = []
+    for question in item.questions:
+        chosen = body.answers.get(question.id)
+        per.append(
+            PerQuestion(
+                questionId=question.id,
+                correct=chosen == question.answer_id,
+                correctChoiceId=question.answer_id,
+            )
+        )
+    total = len(per)
+    correct = sum(1 for row in per if row.correct)
+    pct = round(100 * correct / total) if total else 0
+    xp = 20 + round(15 * (correct / total)) if total else 20
+    return GradeResponse(
+        scorePct=pct,
+        correctCount=correct,
+        total=total,
+        perQuestion=per,
+        xpAwarded=xp,
+    )
+</file>
+
+<file path="api/app/__init__.py">
+# Cognite API package
+</file>
+
+<file path="api/app/config.py">
+from pathlib import Path
+
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=(".env", "../.env"),
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
+    openai_api_key: str = ""
+    cognite_api_key: str = ""
+    openai_chat_model: str = "gpt-4o-mini"
+    openai_embedding_model: str = "text-embedding-3-small"
+
+    @property
+    def api_root(self) -> Path:
+        return Path(__file__).resolve().parent.parent
+
+    @property
+    def knowledge_dir(self) -> Path:
+        return self.api_root / "knowledge"
+
+    @property
+    def chroma_dir(self) -> Path:
+        return self.api_root / "data" / "chroma"
+
+
+settings = Settings()
+</file>
+
+<file path="api/app/main.py">
+from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+
+from app.config import settings
+from app.routers.interventions import router as interventions_router
+
+app = FastAPI(title="Cognite API", version="0.1.0")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_origin_regex=r"chrome-extension://.*",
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+@app.middleware("http")
+async def optional_api_key(request: Request, call_next):
+    if settings.cognite_api_key and request.url.path != "/health":
+        provided = request.headers.get("X-Cognite-Key", "")
+        if provided != settings.cognite_api_key:
+            return JSONResponse(status_code=401, content={"detail": "Invalid API key"})
+    return await call_next(request)
+
+
+@app.get("/health")
+def health() -> dict[str, str]:
+    return {"status": "ok", "service": "cognite"}
+
+
+app.include_router(interventions_router)
+</file>
+
+<file path="api/app/store.py">
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from uuid import uuid4
+
+TTL = timedelta(minutes=45)
+
+
+@dataclass
+class StoredQuestion:
+    id: str
+    prompt: str
+    choices: list[dict[str, str]]
+    answer_id: str
+
+
+@dataclass
+class StoredIntervention:
+    id: str
+    title: str
+    passage_markdown: str
+    estimated_minutes: int
+    questions: list[StoredQuestion]
+    expires_at: datetime
+
+
+_STORE: dict[str, StoredIntervention] = {}
+
+
+def put(item: StoredIntervention) -> StoredIntervention:
+    _STORE[item.id] = item
+    return item
+
+
+def get(intervention_id: str) -> StoredIntervention | None:
+    item = _STORE.get(intervention_id)
+    if item is None:
+        return None
+    if item.expires_at < datetime.now(timezone.utc):
+        _STORE.pop(intervention_id, None)
+        return None
+    return item
+
+
+def new_id() -> str:
+    return str(uuid4())
+</file>
+
+<file path="api/knowledge/arts/color.md">
+---
+title: Color is a relationship
+tag: arts
+source: cognite-original
+---
+
+A patch of paint is not "blue" in isolation. Next to orange it can vibrate. Next to a darker blue it can look pale. Josef Albers built a whole teaching method on this: the same physical color appears to change when its neighbors change. Color is a relationship.
+
+That is why palettes matter more than favorite pigments. Filmmakers, illustrators, and interior designers choose limited sets so the eye can learn a world. Complementary pairs create tension. Analogous neighbors create calm. A small warm accent in a cool field will steal attention every time, which is useful for a signal and disastrous for a noisy poster.
+
+Light complicates the lesson. North daylight, tungsten bulbs, and phone screens all shift what you think you mixed. Painters learn to squint, to compare, to put a test stroke on the actual ground instead of trusting the tube's name.
+
+You do not need to become a color theorist to use the idea. If a page feels chaotic, reduce the number of hues. If a scene feels dead, change the neighbor, not the hero. Seeing color as relation is another way of saying: nothing important sits alone. Context is part of the work.
+</file>
+
+<file path="api/knowledge/arts/constraints.md">
+---
+title: Constraints make style
+tag: arts
+source: cognite-original
+---
+
+A sonnet has fourteen lines. A blues verse has a familiar twelve-bar spine. A haiku counts beats. These are not handcuffs so much as games with rules. Constraints reduce the search space so a maker can finish, compare, and surprise inside a shared form.
+
+Twentieth-century artists often invented their own constraints: a painter limited to three colors, a filmmaker shooting in one room, a novelist avoiding a letter. The Oulipo writers treated restriction as an engine. The point is not suffering. The point is that infinite choice is a poor collaborator.
+
+Beginners sometimes wait to "feel free" before they start. Practitioners pick a box. Write 300 words. Use only photographs from one walk. Compose for a cheap keyboard. The box creates style because style is a pattern of decisions, and decisions need edges.
+
+There is a warning attached. A constraint that you never chose — a feed's length, a template's layout, a client's panic — can also produce a style, just not yours. The artistic move is to notice which limits are instruments and which are someone else's default. Then steal the useful ones on purpose.
+</file>
+
+<file path="api/knowledge/arts/negative-space.md">
+---
+title: Negative space is a kind of drawing
+tag: arts
+source: cognite-original
+---
+
+Beginners often draw the object: the cup, the hand, the tree. Artists also draw the gaps — the triangle of wall between an arm and a torso, the light around a bowl. That habit is called attending to negative space. It is a trick for seeing relations instead of labels.
+
+Once you look at the gap, proportions get easier because you stop fighting the word "hand," which your mind already thinks it knows. The same shift appears in music as rest, in architecture as courtyard, in theater as pause. What is not sounded or built can organize what is.
+
+This is craft, not mysticism. A page of text with no margins is harder to read. A song with no breath is harder to feel. Designers talk about white space for the same reason sculptors talk about the air around a figure: attention needs a place to stand.
+
+You can practice in two minutes. Look at a plant against a window and sketch only the sky-shaped pieces. Or listen to a piece of music and count the silences. The skill transfers. In writing, it is the cut sentence. In conversation, it is not rushing to fill a pause. Art trains perception, and perception is the raw material of every other kind of thinking.
+</file>
+
+<file path="api/knowledge/history/libraries.md">
+---
+title: Why libraries are radical
+tag: history
+source: cognite-original
+---
+
+A public library looks quiet. Historically, it is a radical idea: that ordinary people should be able to read without buying every book, proving membership in a guild, or asking a patron's permission. Access to texts has almost always been political because texts carry law, religion, science, and satire.
+
+Medieval European libraries were often attached to monasteries or universities, with chained books and carefully controlled copying. Islamic cities such as Baghdad and Cordoba ran famous houses of learning that translated and extended Greek, Persian, and Indian works. In East Asia, imperial collections and exam culture made literacy a route to office. None of these systems was "the public" in the modern sense.
+
+The nineteenth-century public library movement, especially in Britain and the United States, argued that a democracy needs readers. Industrial cities funded buildings, catalogs, and hours of free browsing. Andrew Carnegie later paid for thousands of library buildings, with local communities expected to stock and staff them. The gift was architecture plus a bet on civic maintenance.
+
+Libraries still negotiate inclusion: which languages, which hours, whose history is on the shelf. Digital lending adds copyright fights to the older ones. The through-line is simple. A society that treats reading as a private luxury will get a different public than a society that treats it as infrastructure.
+</file>
+
+<file path="api/knowledge/history/printing-press.md">
+---
+title: The printing press as a network effect
+tag: history
+source: cognite-original
+---
+
+Johannes Gutenberg's press, developed in Mainz in the mid-1400s, combined movable metal type, oil-based ink, and a screw press. Printing itself was not new: China and Korea had earlier woodblock and metal-type traditions. What changed in Europe was speed of spread plus a market of vernacular readers, universities, and churches that wanted identical copies.
+
+A book copied by hand is a performance. A printed book is a small factory run. Once type is set, the cost of the next copy drops. That makes pamphlets, indulgences, scientific tables, and news sheets economically possible. It also makes censorship a different problem: you can burn a manuscript; you cannot easily burn a whole edition that has already ridden out of town.
+
+Historians still argue about how much the press "caused" the Reformation, the Scientific Revolution, or nationalism. A cautious claim is enough: cheaper identical texts made it easier to compare claims, quote chapter and verse, and notice contradictions. Maps, music, and mathematical notation benefited from the same trick.
+
+The modern echo is not "screens are the new press" as a slogan. It is that communication technology changes who can publish, how fast error travels, and what counts as a shared reference. Movable type did not make people wise. It changed the cost of making an argument public.
+</file>
+
+<file path="api/knowledge/history/silk-roads.md">
+---
+title: Silk Roads were many roads
+tag: history
+source: cognite-original
+---
+
+"The Silk Road" is a later nickname, popularized in the nineteenth century, for a web of overland and maritime routes that linked East Asia, Central Asia, the Indian Ocean, the Middle East, and the Mediterranean. Silk moved, but so did glass, spices, horses, paper, religions, diseases, and stories.
+
+Caravan cities such as Samarkand and Dunhuang grew as hubs, not as endpoints. Travelers rarely went the whole way. Goods and ideas hopped from merchant to merchant. That hopping is why a motif, a dye, or a parable can show up thousands of kilometers from its origin without a single famous explorer to credit.
+
+The routes were never only peaceful commerce. Empires taxed them, bandits raided them, and climate and politics opened or closed passes. The Mongol period in the thirteenth and fourteenth centuries is often described as making long-distance travel safer for a time; it also moved armies and, likely, pathogens. The Black Death's geography is still studied with care, but connectedness cut both ways.
+
+Remembering the Silk Roads as a network rather than a highway is the historical skill. Culture does not usually travel as a pure package. It is selected, mistranslated, and remixed at every stop. That is as true of recipes as of religions.
+</file>
+
+<file path="api/knowledge/philosophy/attention.md">
+---
+title: Attention as a moral problem
+tag: philosophy
+source: cognite-original
+---
+
+Simone Weil wrote that attention is the rarest and purest form of generosity. Iris Murdoch argued that moral life is less about heroic choices than about what we steadily look at. Both are pushing against a picture of ethics as a calculator you take out only in emergencies.
+
+If that is right, then the design of your day is ethical design. What you repeatedly notice becomes easier to care about. What you never look at becomes abstract, including other people's inner lives. A feed that trains you to skim faces as content is not only a productivity issue.
+
+This does not require a hair shirt. Attention is finite, so some filtering is sanity. The philosophical question is who sets the filter. If an interface always chooses the next object for you, you are practicing a kind of passivity. If you choose a book, a problem, or a conversation and return to it after wandering, you are practicing a kind of freedom — not metaphysical freedom, just authorship of the next few minutes.
+
+Cognite's product bet sits here, not in neuroscience theater. A short reading is a small claim: you can pick an object of attention on purpose. Whether that makes you a better person is a longer argument. Whether it is possible is something you can test this afternoon.
+</file>
+
+<file path="api/knowledge/philosophy/examined-life.md">
+---
+title: The examined life is a method
+tag: philosophy
+source: cognite-original
+---
+
+Socrates, as Plato presents him, walks around Athens asking people what they mean by courage, justice, or piety. The point is not to win a quiz. It is to show that confident definitions often collapse when you test them with counterexamples. "The unexamined life is not worth living" is easy to quote and hard to practice, because examination threatens status.
+
+Socratic method, stripped of marble statues, is a loop: state a claim, ask what it implies, look for a case that does not fit, revise. It is closer to debugging than to preaching. You can use it on a political slogan, a career plan, or the sentence "I do not have time to read."
+
+Two mistakes follow the slogan. One is endless doubt that never chooses an action. The other is treating examination as a personality — being the person who always asks a clever question at dinner. The useful middle is local: pick one belief that actually guides your week and pressure-test it.
+
+Philosophy here is not a rival to science. It is care with concepts. If you cannot say what you mean by "focus," "waste," or "a good day," you will still live by some definition. It will just be an unexamined one, usually borrowed from whatever interface is nearest.
+</file>
+
+<file path="api/knowledge/philosophy/thought-experiments.md">
+---
+title: Thought experiments are not evidence
+tag: philosophy
+source: cognite-original
+---
+
+A thought experiment is a carefully designed imaginary case: a runaway trolley, a brain in a vat, a violinist plugged into your circulatory system overnight. Philosophers use them to isolate a principle. If you say "always minimize deaths," the trolley case asks whether you would still say that when minimizing deaths means diverting a train yourself.
+
+The method is powerful and abused. It is powerful because real life arrives messy, with extra facts that let you dodge the principle. It is abused when the story is so science-fictional that your intuition is just a reaction to weirdness. "I would not push the large person" might be a moral judgment, a disgust response, or a refusal to accept the premise.
+
+Good use of thought experiments treats them as questions, not as data. They reveal what you are already committed to. They do not replace history, psychology, or the details of an actual hospital. When a public debate is conducted only in hypotheticals, ask what real situation is being avoided.
+
+You can steal the tool without the jargon. Before you adopt a rule ("I never skip," "I always optimize"), invent a case where the rule looks cruel or silly. If you still want the rule, keep it. If not, you have learned something cheaply, without waiting for the world to stage the example.
+</file>
+
+<file path="api/knowledge/science/feedback-loops.md">
+---
+title: Feedback loops in ordinary life
+tag: science
+source: cognite-original
+---
+
+A feedback loop happens when a system's output becomes part of its later input. A thermostat is the classroom example: the heater warms the room, a sensor reads the temperature, and the heater shuts off. That is negative feedback, which stabilizes. A microphone too close to a speaker is positive feedback: sound in, louder sound out, until the room rings.
+
+Biology is dense with both. Insulin helps bring high blood sugar down. Hunger and satiety hormones push eating up or down. Predator and prey populations can oscillate. Climate systems include loops too: melting ice can expose darker water that absorbs more heat, which melts more ice.
+
+The scientific habit is to ask which loop you are in before you "fix" a number. Pushing on a stabilizing loop can look like nothing is happening, until it suddenly is. Pushing on a reinforcing loop can look like rapid success, until it overshoots.
+
+You do not need laboratory equipment to use the idea. Sleep, caffeine, scrolling, and mood can form loops. A late night makes the next day harder, which makes another late night tempting. Naming the loop does not automatically break it, but it gives you a place to intervene: earlier bedtime, a walk, a different first action in the morning. Science, here, is a way of seeing circular causes instead of a single villain.
+</file>
+
+<file path="api/knowledge/science/photosynthesis.md">
+---
+title: Photosynthesis in one tight story
+tag: science
+source: cognite-original
+---
+
+Photosynthesis is how most of the living world captures sunlight and stores it as chemical energy. In plants, algae, and many bacteria, pigments such as chlorophyll absorb photons. That energy is used to split water, release oxygen, and build energy carriers. Those carriers then help stitch carbon dioxide into sugars.
+
+The story has two linked acts. The light-dependent reactions happen in membranes and produce ATP, NADPH, and oxygen. The Calvin cycle, which does not need photons at every step but needs the products of the first act, fixes carbon. Glucose and other carbohydrates are later used for growth, storage, or respiration.
+
+This is why plants matter far beyond gardens. They are an interface between the sun and the food web. The oxygen in the air you are breathing is a waste product of water-splitting that accumulated over geological time. Fossil fuels are, roughly, ancient photosynthesis packed into a dense, slow-to-renew form.
+
+A common confusion is to treat plants as "making energy from nothing." They do not. They convert one form of energy into another, with losses, like every other physical process. The elegance is the conversion, not a violation of thermodynamics. When you eat a fruit, you are borrowing sunlight that was captured on a leaf.
+</file>
+
+<file path="api/knowledge/science/working-memory.md">
+---
+title: Working memory has a small stage
+tag: science
+source: cognite-original
+---
+
+Working memory is the small amount of information you can hold in mind and manipulate at once: a phone number you are about to dial, the beginning of a sentence you are still writing, the rule you are using to sort objects. It is not the same as long-term memory, which can store languages, faces, and routes for years.
+
+Laboratory tasks suggest the stage is limited. Classic estimates talked about "seven plus or minus two" chunks. Later work often finds fewer, especially if the items are novel and you cannot group them. Chunking is the trick: "C-I-A" is three letters or one agency. Expertise is, in part, better chunking.
+
+Attention and working memory are close neighbors. Distraction does not always erase knowledge; it can simply knock the current items off the stage. That is one reason a notification during a proof, a recipe, or a delicate conversation feels costly. You may still "know" the material, but you have to reload it.
+
+None of this requires claiming that an app can see your networks fire. The practical implication is architectural. If a task needs several pieces held together — an argument, a budget, a design constraint — protect a few quiet minutes. Externalize what you can onto paper. Build one chunk at a time. The brain's stage is small. Good work respects the furniture.
+</file>
+
+<file path="api/knowledge/technology/apis.md">
+---
+title: Why APIs feel like doors
+tag: technology
+source: cognite-original
+---
+
+An API, or application programming interface, is a contract. One program promises that if you ask for something in a particular shape, it will answer in a particular shape. You do not need to know how the other program stores data, which language it uses, or which server room it lives in. You only need the contract.
+
+That is why APIs feel like doors. A well-designed door has a handle you can find in the dark. A well-designed API has endpoints, methods, and error messages that stay stable. When the door is moved without warning, every caller trips. That is the social meaning of "breaking change."
+
+REST-style HTTP APIs became popular because the web already knew how to GET, POST, PUT, and DELETE resources. JSON became a common body format because it is readable by both humans and machines. None of this is magic. It is a shared vocabulary that lets a Chrome extension talk to a local server, or a weather app talk to a national agency.
+
+The important design choice is not cleverness. It is what you refuse to expose. An API that accepts a user's interests and a reading length does not need the URL of the page they were scrolling. Smaller contracts leak less, fail less, and stay easier to reason about. Technology is often improved by sending less.
+</file>
+
+<file path="api/knowledge/technology/caching.md">
+---
+title: Caching is a bet about the future
+tag: technology
+source: cognite-original
+---
+
+A cache stores an answer you think you will need again. Your browser caches images so a second visit is faster. A CPU caches recently used memory so it does not walk all the way to RAM. A news app caches headlines so it can open on a train.
+
+Every cache is a bet: that the future will look enough like the past. When the bet is right, you save time and energy. When it is wrong, you show stale data, serve an old price, or hide a security fix. Cache invalidation — deciding when a stored answer is no longer trustworthy — is famously hard because the world does not send a single, clean "this changed" signal.
+
+There are simple policies. Time-to-live expires an item after a number of minutes. Least-recently-used discards whatever nobody asked for. Write-through updates the cache whenever the source of truth changes. None of these policies is universally best. A weather forecast can be a few minutes late. A bank balance should not be.
+
+For a small product, the useful lesson is restraint. Cache what is expensive and slow to change. Do not cache secrets in a place you cannot lock. And remember that a cache is not knowledge; it is a convenience copy. If you cannot explain how an item becomes invalid, you are not caching. You are hoping.
+</file>
+
+<file path="api/knowledge/technology/version-control.md">
+---
+title: Version control as a time machine
+tag: technology
+source: cognite-original
+---
+
+Version control is easy to treat as a backup button. Its deeper idea is that software is a history of decisions. A commit is a snapshot plus a message about why the snapshot exists. A branch is a parallel history. A merge is a negotiation between two histories that both claim to be true.
+
+Git, the most common tool for this, stores snapshots of a project as a directed graph of commits. Each commit points to its parent (or parents). That graph lets you reconstruct any past state without keeping an endless stack of duplicate folders. It also makes collaboration possible: two people can change the same project, then reconcile those changes instead of overwriting one another.
+
+Three practical habits matter more than advanced commands. First, commit in small, coherent pieces so the history is readable. Second, write messages that explain the reason for a change, not only the file list. Third, review diffs before you share them. A diff is a map of what actually moved, which is often more honest than memory.
+
+Conflicts feel like failures, but they are the system doing its job. Git cannot know which of two edits to a paragraph is the intended one. A human has to decide. The same is true of product choices: tools can record options, but they cannot pick the goal. Version control does not invent intelligence. It externalizes memory so your attention can stay on the next decision.
+</file>
+
+<file path="api/scripts/ingest.py">
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from app.rag.ingest import ingest_knowledge
+
+
+def main() -> None:
+    count = ingest_knowledge()
+    print(f"Ingested {count} chunks into local Chroma.")
+
+
+if __name__ == "__main__":
+    main()
+</file>
+
+<file path="api/.env.example">
+OPENAI_API_KEY=sk-your-key-here
+COGNITE_API_KEY=
+OPENAI_CHAT_MODEL=gpt-4o-mini
+OPENAI_EMBEDDING_MODEL=text-embedding-3-small
+</file>
+
+<file path="api/requirements.txt">
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+openai>=1.54.0
+chromadb>=0.5.20
+pydantic-settings>=2.6.0
+python-dotenv>=1.0.1
+python-multipart>=0.0.12
+</file>
+
+<file path="extension/src/background/index.ts">
+import { siteIdForHost, todayKey } from "../shared/constants";
+import { isMessage, type ExtensionMessage } from "../shared/messages";
+import { applyCompletion } from "../shared/scoring";
+import { loadState, patchState, saveState } from "../shared/storage";
+import type { LiveStatus, StoredState } from "../shared/types";
+
+const ALARM = "cognite-tick";
+
+function hostnameFromUrl(url: string | undefined): string | null {
+  if (!url) return null;
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return null;
+  }
+}
+
+function isEnabledSite(state: StoredState, siteId: string | null): siteId is string {
+  return Boolean(siteId && state.settings.enabledSiteIds.includes(siteId));
+}
+
+async function getActiveTrackedSite(): Promise<{
+  tabId: number | null;
+  siteId: string | null;
+  focused: boolean;
+}> {
+  const windows = await chrome.windows.getAll({ populate: false });
+  const focusedWindow = windows.find((w) => w.focused && w.type === "normal");
+  if (!focusedWindow) return { tabId: null, siteId: null, focused: false };
+
+  const [tab] = await chrome.tabs.query({
+    active: true,
+    windowId: focusedWindow.id,
+  });
+  const host = hostnameFromUrl(tab?.url);
+  const siteId = host ? siteIdForHost(host) : null;
+  return { tabId: tab?.id ?? null, siteId, focused: true };
+}
+
+function liveStatus(state: StoredState, activeSiteId: string | null): LiveStatus {
+  const thresholdMs = state.settings.thresholdMinutes * 60_000;
+  const activeSiteMs = activeSiteId ? (state.timer.perSiteMs[activeSiteId] ?? 0) : 0;
+  const remainingMs =
+    activeSiteId && isEnabledSite(state, activeSiteId)
+      ? Math.max(0, thresholdMs - activeSiteMs)
+      : null;
+  return {
+    settings: state.settings,
+    progress: state.progress,
+    activeSiteId,
+    activeSiteMs,
+    remainingMs,
+    overlayPending: Boolean(
+      activeSiteId && state.timer.overlayShownSiteIds.includes(activeSiteId),
+    ),
+  };
+}
+
+function rolloverTimer(state: StoredState): void {
+  const today = todayKey();
+  if (state.timer.date !== today) {
+    state.timer = {
+      date: today,
+      perSiteMs: {},
+      lastTick: null,
+      lastSiteId: null,
+      overlayShownSiteIds: [],
+    };
+  }
+  if (state.progress.completionsTodayDate !== today) {
+    state.progress.completionsToday = 0;
+    state.progress.completionsTodayDate = today;
+  }
+}
+
+async function maybePrompt(state: StoredState, tabId: number | null, siteId: string | null) {
+  if (!tabId || !isEnabledSite(state, siteId)) return;
+  const thresholdMs = state.settings.thresholdMinutes * 60_000;
+  const used = state.timer.perSiteMs[siteId] ?? 0;
+  if (used < thresholdMs) return;
+  if (state.timer.overlayShownSiteIds.includes(siteId)) return;
+
+  state.timer.overlayShownSiteIds = [...state.timer.overlayShownSiteIds, siteId];
+  await saveState(state);
+  const minutes = Math.round(used / 60_000);
+  const message: ExtensionMessage = {
+    type: "THRESHOLD_REACHED",
+    payload: {
+      siteId,
+      minutes,
+      durationMinutes: state.settings.durationMinutes,
+    },
+  };
+  try {
+    await chrome.tabs.sendMessage(tabId, message);
+  } catch {
+    // Content script may not be ready yet; it can request status on load.
+  }
+}
+
+async function tick(): Promise<void> {
+  const state = await loadState();
+  rolloverTimer(state);
+  const now = Date.now();
+  const { tabId, siteId, focused } = await getActiveTrackedSite();
+  const tracked = focused && isEnabledSite(state, siteId) ? siteId : null;
+
+  if (state.timer.lastTick && state.timer.lastSiteId) {
+    const delta = Math.min(now - state.timer.lastTick, 30_000);
+    if (delta > 0) {
+      const prev = state.timer.perSiteMs[state.timer.lastSiteId] ?? 0;
+      state.timer.perSiteMs[state.timer.lastSiteId] = prev + delta;
+    }
+  }
+
+  state.timer.lastTick = now;
+  state.timer.lastSiteId = tracked;
+  await saveState(state);
+  await maybePrompt(state, tabId, tracked);
+}
+
+function resetSiteTimer(state: StoredState, siteId: string) {
+  const { [siteId]: _, ...rest } = state.timer.perSiteMs;
+  state.timer.perSiteMs = rest;
+  state.timer.overlayShownSiteIds = state.timer.overlayShownSiteIds.filter((id) => id !== siteId);
+  if (state.timer.lastSiteId === siteId) {
+    state.timer.lastTick = Date.now();
+  }
+}
+
+async function handleMessage(
+  message: ExtensionMessage,
+  sender: chrome.runtime.MessageSender,
+): Promise<unknown> {
+  if (message.type === "GET_STATUS") {
+    const state = await loadState();
+    rolloverTimer(state);
+    const { siteId } = await getActiveTrackedSite();
+    const tracked = isEnabledSite(state, siteId) ? siteId : null;
+    return liveStatus(state, tracked);
+  }
+
+  if (message.type === "SKIP_INTERVENTION") {
+    const next = await patchState((state) => {
+      resetSiteTimer(state, message.payload.siteId);
+      const applied = applyCompletion(state.progress, {
+        skipped: true,
+        grade: null,
+        siteId: message.payload.siteId,
+        title: null,
+        passageMarkdown: null,
+        usedFixture: false,
+      });
+      state.progress = applied.progress;
+    });
+    return liveStatus(next, message.payload.siteId);
+  }
+
+  if (message.type === "START_INTERVENTION") {
+    await patchState((state) => {
+      resetSiteTimer(state, message.payload.siteId);
+    });
+    await chrome.storage.session.set({ pendingSiteId: message.payload.siteId });
+    await chrome.tabs.create({
+      url: chrome.runtime.getURL("intervention.html"),
+    });
+    return { ok: true };
+  }
+
+  if (message.type === "INTERVENTION_COMPLETE") {
+    const next = await patchState((state) => {
+      const applied = applyCompletion(state.progress, message.payload);
+      state.progress = applied.progress;
+    });
+    await chrome.storage.session.remove("pendingSiteId");
+    return next.progress;
+  }
+
+  if (message.type === "SETTINGS_UPDATED") {
+    await tick();
+    return { ok: true };
+  }
+
+  void sender;
+  return undefined;
+}
+
+chrome.runtime.onInstalled.addListener(async () => {
+  const state = await loadState();
+  await saveState(state);
+  await chrome.alarms.create(ALARM, { periodInMinutes: 0.25 });
+  if (!state.settings.onboardingComplete) {
+    chrome.runtime.openOptionsPage();
+  }
+});
+
+chrome.runtime.onStartup.addListener(async () => {
+  await chrome.alarms.create(ALARM, { periodInMinutes: 0.25 });
+  await tick();
+});
+
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === ALARM) void tick();
+});
+
+chrome.tabs.onActivated.addListener(() => {
+  void tick();
+});
+
+chrome.tabs.onUpdated.addListener((_id, change) => {
+  if (change.status === "complete" || change.url) void tick();
+});
+
+chrome.windows.onFocusChanged.addListener(() => {
+  void tick();
+});
+
+chrome.runtime.onMessage.addListener((raw, sender, sendResponse) => {
+  if (!isMessage(raw)) return;
+  void handleMessage(raw, sender)
+    .then(sendResponse)
+    .catch((err: unknown) => {
+      sendResponse({ error: err instanceof Error ? err.message : "unknown" });
+    });
+  return true;
+});
+
+void tick();
+</file>
+
+<file path="extension/src/content/index.ts">
+import { DEFAULT_SITES } from "../shared/constants";
+import { isMessage, type ExtensionMessage } from "../shared/messages";
+import type { LiveStatus } from "../shared/types";
+
+const ROOT_ID = "cognite-overlay-root";
+
+function siteLabel(siteId: string): string {
+  return DEFAULT_SITES.find((s) => s.id === siteId)?.label ?? siteId;
+}
+
+function ensureOverlay(): HTMLDivElement {
+  const existing = document.getElementById(ROOT_ID) as HTMLDivElement | null;
+  if (existing) return existing;
+  const host = document.createElement("div");
+  host.id = ROOT_ID;
+  host.style.all = "initial";
+  host.style.position = "fixed";
+  host.style.zIndex = "2147483646";
+  host.style.right = "16px";
+  host.style.bottom = "16px";
+  document.documentElement.appendChild(host);
+  const shadow = host.attachShadow({ mode: "open" });
+  shadow.innerHTML = `
+    <style>
+      :host { all: initial; }
+      .panel {
+        width: min(360px, calc(100vw - 32px));
+        font-family: "Avenir Next", "Segoe UI", sans-serif;
+        color: #f4ece2;
+        background: #1e1914;
+        border: 1px solid rgba(244, 236, 226, 0.14);
+        border-radius: 18px;
+        box-shadow: 0 18px 50px rgba(0,0,0,.4);
+        padding: 16px 16px 14px;
+        display: none;
+      }
+      .panel.open { display: block; }
+      .kicker {
+        text-transform: uppercase;
+        letter-spacing: .16em;
+        font-size: 10px;
+        color: #f0c07a;
+        margin: 0 0 6px;
+      }
+      h2 { font-size: 18px; margin: 0 0 8px; }
+      p { margin: 0 0 12px; color: #b9a894; font-size: 13px; line-height: 1.45; }
+      .row { display: flex; gap: 8px; }
+      button {
+        font: inherit;
+        border: 0;
+        border-radius: 999px;
+        padding: 8px 12px;
+        cursor: pointer;
+      }
+      .start { background: #e08a3c; color: #1a120c; font-weight: 650; }
+      .skip { background: transparent; color: #f4ece2; border: 1px solid rgba(244,236,226,.2); }
+    </style>
+    <div class="panel" id="panel">
+      <p class="kicker">Cognite</p>
+      <h2>Reignite your cognition</h2>
+      <p id="copy"></p>
+      <div class="row">
+        <button class="start" id="start">Start reading</button>
+        <button class="skip" id="skip">Skip</button>
+      </div>
+    </div>
+  `;
+  return host;
+}
+
+function showOverlay(payload: { siteId: string; minutes: number; durationMinutes: number }) {
+  const host = ensureOverlay();
+  const shadow = host.shadowRoot;
+  if (!shadow) return;
+  const panel = shadow.getElementById("panel");
+  const copy = shadow.getElementById("copy");
+  const start = shadow.getElementById("start");
+  const skip = shadow.getElementById("skip");
+  if (!panel || !copy || !start || !skip) return;
+
+  copy.textContent = `You've been on ${siteLabel(payload.siteId)} for about ${payload.minutes} min. Take a voluntary ${payload.durationMinutes}-minute reading challenge, or skip. Cognite tracks time on sites you selected — not page content, and not brain activity.`;
+  panel.classList.add("open");
+
+  start.onclick = () => {
+    panel.classList.remove("open");
+    const msg: ExtensionMessage = {
+      type: "START_INTERVENTION",
+      payload: { siteId: payload.siteId },
+    };
+    void chrome.runtime.sendMessage(msg);
+  };
+  skip.onclick = () => {
+    panel.classList.remove("open");
+    const msg: ExtensionMessage = {
+      type: "SKIP_INTERVENTION",
+      payload: { siteId: payload.siteId },
+    };
+    void chrome.runtime.sendMessage(msg);
+  };
+}
+
+chrome.runtime.onMessage.addListener((raw) => {
+  if (!isMessage(raw) || raw.type !== "THRESHOLD_REACHED") return;
+  showOverlay(raw.payload);
+});
+
+void chrome.runtime.sendMessage({ type: "GET_STATUS" }).then((status: LiveStatus) => {
+  if (!status?.overlayPending || !status.activeSiteId) return;
+  const minutes = Math.max(1, Math.round(status.activeSiteMs / 60_000));
+  showOverlay({
+    siteId: status.activeSiteId,
+    minutes,
+    durationMinutes: status.settings.durationMinutes,
+  });
+});
+</file>
+
+<file path="extension/src/intervention/InterventionApp.tsx">
+import { useEffect, useMemo, useState } from "react";
+import { generateIntervention, gradeIntervention } from "../shared/api";
+import { FIXTURE_INTERVENTION, gradeFixture } from "../shared/fixture";
+import { loadState } from "../shared/storage";
+import type { GradeResult, InterventionPayload } from "../shared/types";
+
+type Phase = "loading" | "reading" | "quiz" | "results";
+
+function renderMarkdown(md: string): string {
+  const escaped = md
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+  return escaped
+    .split(/\n{2,}/)
+    .map((block) => `<p>${block.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>").replace(/\n/g, "<br/>")}</p>`)
+    .join("");
+}
+
+export function InterventionApp() {
+  const [phase, setPhase] = useState<Phase>("loading");
+  const [error, setError] = useState<string | null>(null);
+  const [item, setItem] = useState<InterventionPayload | null>(null);
+  const [answers, setAnswers] = useState<Record<string, string>>({});
+  const [grade, setGrade] = useState<GradeResult | null>(null);
+  const [siteId, setSiteId] = useState<string | null>(null);
+  const [xp, setXp] = useState<number>(0);
+
+  useEffect(() => {
+    void (async () => {
+      const state = await loadState();
+      const pending = await chrome.storage.session.get("pendingSiteId");
+      setSiteId((pending.pendingSiteId as string | undefined) ?? null);
+      try {
+        const generated = await generateIntervention({
+          interests: state.settings.interests,
+          durationMinutes: state.settings.durationMinutes,
+        });
+        setItem(generated);
+        setPhase("reading");
+      } catch (err) {
+        setItem(FIXTURE_INTERVENTION);
+        setError(err instanceof Error ? err.message : "API unavailable");
+        setPhase("reading");
+      }
+    })();
+  }, []);
+
+  const html = useMemo(
+    () => (item ? renderMarkdown(item.passageMarkdown) : ""),
+    [item],
+  );
+
+  async function skip() {
+    await chrome.runtime.sendMessage({
+      type: "INTERVENTION_COMPLETE",
+      payload: {
+        siteId,
+        skipped: true,
+        grade: null,
+        title: item?.title ?? null,
+        passageMarkdown: null,
+        usedFixture: item?.usedFixture ?? false,
+      },
+    });
+    setPhase("results");
+    setGrade(null);
+    setXp(0);
+  }
+
+  async function submit() {
+    if (!item) return;
+    try {
+      let result: GradeResult;
+      if (item.usedFixture || item.id.startsWith("fixture")) {
+        result = gradeFixture(answers);
+      } else {
+        result = await gradeIntervention(item.id, answers);
+      }
+      setGrade(result);
+      const progress = await chrome.runtime.sendMessage({
+        type: "INTERVENTION_COMPLETE",
+        payload: {
+          siteId,
+          skipped: false,
+          grade: result,
+          title: item.title,
+          passageMarkdown: item.passageMarkdown,
+          usedFixture: item.usedFixture,
+        },
+      });
+      setXp(progress?.sessions?.[0]?.xp ?? result.xpAwarded);
+      setPhase("results");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not grade the quiz.");
+    }
+  }
+
+  if (phase === "loading" || !item) {
+    return (
+      <div className="wrap">
+        <p className="kicker">Cognite</p>
+        <h1 className="sans">Preparing a short reading…</h1>
+        <p className="muted">Grounding a passage in your selected interests.</p>
+      </div>
+    );
+  }
+
+  if (phase === "results") {
+    return (
+      <div className="wrap">
+        <p className="kicker">Cognite</p>
+        <h1 className="sans">Nice work</h1>
+        {grade ? (
+          <>
+            <p>
+              You answered {grade.correctCount} of {grade.total} correctly ({grade.scorePct}%).
+            </p>
+            <p className="muted">+{xp} XP added to your Cognitive Score.</p>
+            <div className="card">
+              {item.questions.map((q) => {
+                const row = grade.perQuestion.find((p) => p.questionId === q.id);
+                return (
+                  <p key={q.id}>
+                    {row?.correct ? "Correct" : "Review"}: {q.prompt}
+                  </p>
+                );
+              })}
+            </div>
+          </>
+        ) : (
+          <p className="muted">Skipped — no XP change. You can try again anytime from the popup.</p>
+        )}
+        <div className="row" style={{ marginTop: 16 }}>
+          <button className="btn" onClick={() => window.close()}>
+            Done
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="wrap">
+      <p className="kicker">Cognite · reignite your cognition</p>
+      <h1 className="sans">{item.title}</h1>
+      <p className="muted">
+        About {item.estimatedMinutes} min · {item.usedFixture ? "offline sample reading" : "grounded in Cognite’s knowledge base"}
+      </p>
+      {error && item.usedFixture && (
+        <p className="muted">The generator was offline, so this is a local sample. {error}</p>
+      )}
+
+      {phase === "reading" && (
+        <>
+          <article className="card passage" dangerouslySetInnerHTML={{ __html: html }} />
+          <div className="row" style={{ marginTop: 16 }}>
+            <button className="btn" onClick={() => setPhase("quiz")}>
+              I’m ready for the quiz
+            </button>
+            <button className="btn secondary" onClick={() => void skip()}>
+              Skip
+            </button>
+          </div>
+        </>
+      )}
+
+      {phase === "quiz" && (
+        <>
+          {item.questions.map((q) => (
+            <section key={q.id} className="card" style={{ marginTop: 12 }}>
+              <h2 className="sans" style={{ fontSize: 18, marginTop: 0 }}>
+                {q.prompt}
+              </h2>
+              {q.choices.map((c) => (
+                <button
+                  key={c.id}
+                  className={`choice ${answers[q.id] === c.id ? "selected" : ""}`}
+                  onClick={() => setAnswers((prev) => ({ ...prev, [q.id]: c.id }))}
+                >
+                  {c.text}
+                </button>
+              ))}
+            </section>
+          ))}
+          <div className="row" style={{ marginTop: 16 }}>
+            <button
+              className="btn"
+              disabled={item.questions.some((q) => !answers[q.id])}
+              onClick={() => void submit()}
+            >
+              Submit
+            </button>
+            <button className="btn secondary" onClick={() => void skip()}>
+              Skip
+            </button>
+          </div>
+          {error && !item.usedFixture && <p className="muted">{error}</p>}
+        </>
+      )}
+    </div>
+  );
+}
+</file>
+
+<file path="extension/src/intervention/main.tsx">
+import { StrictMode } from "react";
+import { createRoot } from "react-dom/client";
+import { InterventionApp } from "./InterventionApp";
+import "../shared/ui.css";
+
+createRoot(document.getElementById("root")!).render(
+  <StrictMode>
+    <InterventionApp />
+  </StrictMode>,
+);
+</file>
+
+<file path="extension/src/options/main.tsx">
+import { StrictMode } from "react";
+import { createRoot } from "react-dom/client";
+import { OptionsApp } from "./OptionsApp";
+import "../shared/ui.css";
+
+createRoot(document.getElementById("root")!).render(
+  <StrictMode>
+    <OptionsApp />
+  </StrictMode>,
+);
+</file>
+
+<file path="extension/src/options/OptionsApp.tsx">
+import { useEffect, useState } from "react";
+import {
+  DEFAULT_SITES,
+  DURATION_OPTIONS,
+  INTEREST_LABELS,
+  INTERESTS,
+  THRESHOLD_OPTIONS,
+  type DurationMinutes,
+  type Interest,
+  type ThresholdMinutes,
+} from "../shared/constants";
+import { loadState, patchState } from "../shared/storage";
+import type { Settings } from "../shared/types";
+
+export function OptionsApp() {
+  const [settings, setSettings] = useState<Settings | null>(null);
+  const [saved, setSaved] = useState(false);
+  const [warning, setWarning] = useState<string | null>(null);
+
+  useEffect(() => {
+    void loadState().then((s) => setSettings(s.settings));
+  }, []);
+
+  if (!settings) return <div className="wrap">Loading…</div>;
+
+  function toggleInterest(id: Interest) {
+    setSettings((prev) => {
+      if (!prev) return prev;
+      const has = prev.interests.includes(id);
+      const interests = has
+        ? prev.interests.filter((x) => x !== id)
+        : [...prev.interests, id];
+      return { ...prev, interests };
+    });
+    setSaved(false);
+  }
+
+  function toggleSite(id: string) {
+    setSettings((prev) => {
+      if (!prev) return prev;
+      const has = prev.enabledSiteIds.includes(id);
+      const enabledSiteIds = has
+        ? prev.enabledSiteIds.filter((x) => x !== id)
+        : [...prev.enabledSiteIds, id];
+      return { ...prev, enabledSiteIds };
+    });
+    setSaved(false);
+  }
+
+  async function save() {
+    if (!settings) return;
+    if (settings.interests.length === 0 || settings.enabledSiteIds.length === 0) {
+      setWarning("Pick at least one interest and one site.");
+      return;
+    }
+    setWarning(null);
+    await patchState((state) => {
+      state.settings = { ...settings, onboardingComplete: true };
+    });
+    await chrome.runtime.sendMessage({ type: "SETTINGS_UPDATED" });
+    setSaved(true);
+  }
+
+  return (
+    <div className="wrap">
+      <p className="kicker">Cognite</p>
+      <h1 className="sans" style={{ marginTop: 0 }}>
+        Reignite your cognition
+      </h1>
+      <p className="muted">
+        Cognite is inspired by the idea of switching from long stretches of passive
+        consumption into short bursts of active reading. It does not measure brain
+        networks. It tracks time on sites you select, then offers a voluntary
+        challenge you can always skip.
+      </p>
+
+      <section className="card" style={{ marginTop: 20 }}>
+        <h2 className="sans" style={{ marginTop: 0, fontSize: 18 }}>
+          Interests
+        </h2>
+        <div className="row">
+          {INTERESTS.map((id) => (
+            <button
+              key={id}
+              className={`chip ${settings.interests.includes(id) ? "on" : ""}`}
+              onClick={() => toggleInterest(id)}
+            >
+              {INTEREST_LABELS[id]}
+            </button>
+          ))}
+        </div>
+      </section>
+
+      <section className="card" style={{ marginTop: 16 }}>
+        <h2 className="sans" style={{ marginTop: 0, fontSize: 18 }}>
+          Challenge length
+        </h2>
+        <div className="row">
+          {DURATION_OPTIONS.map((n) => (
+            <button
+              key={n}
+              className={`chip ${settings.durationMinutes === n ? "on" : ""}`}
+              onClick={() => {
+                setSettings({ ...settings, durationMinutes: n as DurationMinutes });
+                setSaved(false);
+              }}
+            >
+              {n} min
+            </button>
+          ))}
+        </div>
+        <h2 className="sans" style={{ fontSize: 18 }}>
+          Time on a selected site before a prompt
+        </h2>
+        <div className="row">
+          {THRESHOLD_OPTIONS.map((n) => (
+            <button
+              key={n}
+              className={`chip ${settings.thresholdMinutes === n ? "on" : ""}`}
+              onClick={() => {
+                setSettings({
+                  ...settings,
+                  thresholdMinutes: n as ThresholdMinutes,
+                });
+                setSaved(false);
+              }}
+            >
+              {n} min{n === 1 ? " (demo)" : ""}
+            </button>
+          ))}
+        </div>
+      </section>
+
+      <section className="card" style={{ marginTop: 16 }}>
+        <h2 className="sans" style={{ marginTop: 0, fontSize: 18 }}>
+          Sites to watch
+        </h2>
+        {DEFAULT_SITES.map((site) => (
+          <label key={site.id} className="row" style={{ margin: "8px 0" }}>
+            <input
+              type="checkbox"
+              checked={settings.enabledSiteIds.includes(site.id)}
+              onChange={() => toggleSite(site.id)}
+            />
+            <span>{site.label}</span>
+          </label>
+        ))}
+      </section>
+
+      <div className="row" style={{ marginTop: 20 }}>
+        <button className="btn" onClick={() => void save()}>
+          Save
+        </button>
+        {saved && <span className="muted">Saved. You can close this tab.</span>}
+        {warning && <span className="muted">{warning}</span>}
+      </div>
+    </div>
+  );
+}
+</file>
+
+<file path="extension/src/popup/main.tsx">
+import { StrictMode } from "react";
+import { createRoot } from "react-dom/client";
+import { PopupApp } from "./PopupApp";
+import "../shared/ui.css";
+
+createRoot(document.getElementById("root")!).render(
+  <StrictMode>
+    <PopupApp />
+  </StrictMode>,
+);
+</file>
+
+<file path="extension/src/popup/PopupApp.tsx">
+import { useEffect, useState } from "react";
+import { DEFAULT_SITES } from "../shared/constants";
+import type { LiveStatus } from "../shared/types";
+
+function formatRemaining(ms: number | null): string {
+  if (ms === null) return "Not on a tracked site";
+  if (ms <= 0) return "Challenge available";
+  const mins = Math.ceil(ms / 60_000);
+  if (mins >= 2) return `${mins} min until a prompt`;
+  const secs = Math.max(1, Math.ceil(ms / 1000));
+  return `${secs}s until a prompt`;
+}
+
+export function PopupApp() {
+  const [status, setStatus] = useState<LiveStatus | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    void chrome.runtime
+      .sendMessage({ type: "GET_STATUS" })
+      .then((res: LiveStatus) => setStatus(res))
+      .catch(() => setError("Could not read status."));
+  }, []);
+
+  if (error) {
+    return (
+      <div className="wrap" style={{ width: 320, padding: 16 }}>
+        <p>{error}</p>
+      </div>
+    );
+  }
+
+  if (!status) {
+    return (
+      <div className="wrap" style={{ width: 320, padding: 16 }}>
+        <p className="muted">Loading…</p>
+      </div>
+    );
+  }
+
+  const last = status.progress.sessions[0];
+  const site = DEFAULT_SITES.find((s) => s.id === status.activeSiteId)?.label;
+
+  return (
+    <div style={{ width: 340, padding: 16 }}>
+      <p className="kicker">Cognite</p>
+      <h1 className="sans" style={{ fontSize: 22, margin: "0 0 4px" }}>
+        Reignite your cognition
+      </h1>
+      {!status.settings.onboardingComplete && (
+        <p className="muted">Finish setup to start tracking selected sites.</p>
+      )}
+      <div className="card" style={{ marginTop: 12 }}>
+        <p className="muted sans" style={{ margin: 0, fontSize: 12 }}>
+          Cognitive Score
+        </p>
+        <p className="score">{status.progress.cognitiveScore}</p>
+        <div className="row muted sans" style={{ fontSize: 13 }}>
+          <span>{status.progress.xp} XP</span>
+          <span>Streak {status.progress.streak}</span>
+        </div>
+      </div>
+      <p className="muted" style={{ marginTop: 12, fontSize: 13 }}>
+        {site ? `${site}: ${formatRemaining(status.remainingMs)}` : formatRemaining(null)}
+      </p>
+      {last && (
+        <p className="muted" style={{ fontSize: 13 }}>
+          Last session: {last.skipped ? "skipped" : `${Math.round((last.accuracy ?? 0) * 100)}% quiz`} · +{last.xp} XP
+        </p>
+      )}
+      <div className="row" style={{ marginTop: 12 }}>
+        <button className="btn" onClick={() => chrome.runtime.openOptionsPage()}>
+          Settings
+        </button>
+        <button
+          className="btn secondary"
+          onClick={() => chrome.tabs.create({ url: chrome.runtime.getURL("intervention.html") })}
+        >
+          Practice now
+        </button>
+      </div>
+    </div>
+  );
+}
+</file>
+
+<file path="extension/src/shared/api.ts">
+import { API_BASE } from "./constants";
+import type { GradeResult, InterventionPayload } from "./types";
+
+const KEY = import.meta.env.VITE_COGNITE_API_KEY as string | undefined;
+
+function headers(): HeadersInit {
+  const h: Record<string, string> = { "Content-Type": "application/json" };
+  if (KEY) h["X-Cognite-Key"] = KEY;
+  return h;
+}
+
+export async function checkHealth(): Promise<boolean> {
+  try {
+    const res = await fetch(`${API_BASE}/health`, { method: "GET" });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+export async function generateIntervention(input: {
+  interests: string[];
+  durationMinutes: 3 | 4 | 5;
+}): Promise<InterventionPayload> {
+  const res = await fetch(`${API_BASE}/v1/interventions`, {
+    method: "POST",
+    headers: headers(),
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Generate failed (${res.status}): ${text}`);
+  }
+  const data = (await res.json()) as Omit<InterventionPayload, "usedFixture">;
+  return { ...data, usedFixture: false };
+}
+
+export async function gradeIntervention(
+  id: string,
+  answers: Record<string, string>,
+): Promise<GradeResult> {
+  const res = await fetch(`${API_BASE}/v1/interventions/${id}/grade`, {
+    method: "POST",
+    headers: headers(),
+    body: JSON.stringify({ answers }),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Grade failed (${res.status}): ${text}`);
+  }
+  return (await res.json()) as GradeResult;
+}
+</file>
+
+<file path="extension/src/shared/constants.ts">
+export const INTERESTS = [
+  "technology",
+  "science",
+  "history",
+  "philosophy",
+  "arts",
+] as const;
+
+export type Interest = (typeof INTERESTS)[number];
+
+export const INTEREST_LABELS: Record<Interest, string> = {
+  technology: "Technology",
+  science: "Science",
+  history: "History",
+  philosophy: "Philosophy",
+  arts: "Arts",
+};
+
+export const DURATION_OPTIONS = [3, 4, 5] as const;
+export type DurationMinutes = (typeof DURATION_OPTIONS)[number];
+
+/** 1 minute is for local demos; production-feel defaults are 10/15/20. */
+export const THRESHOLD_OPTIONS = [1, 10, 15, 20] as const;
+export type ThresholdMinutes = (typeof THRESHOLD_OPTIONS)[number];
+
+export type TrackedSite = {
+  id: string;
+  label: string;
+  hosts: string[];
+};
+
+export const DEFAULT_SITES: TrackedSite[] = [
+  { id: "youtube", label: "YouTube", hosts: ["youtube.com"] },
+  { id: "x", label: "X / Twitter", hosts: ["x.com", "twitter.com"] },
+  { id: "reddit", label: "Reddit", hosts: ["reddit.com"] },
+  { id: "instagram", label: "Instagram", hosts: ["instagram.com"] },
+  { id: "tiktok", label: "TikTok", hosts: ["tiktok.com"] },
+  { id: "facebook", label: "Facebook", hosts: ["facebook.com"] },
+  { id: "netflix", label: "Netflix", hosts: ["netflix.com"] },
+];
+
+export const API_BASE = "http://127.0.0.1:8000";
+
+export function normalizeHost(hostname: string): string {
+  return hostname.replace(/^www\./, "").toLowerCase();
+}
+
+export function siteIdForHost(hostname: string): string | null {
+  const host = normalizeHost(hostname);
+  for (const site of DEFAULT_SITES) {
+    if (site.hosts.some((h) => host === h || host.endsWith(`.${h}`))) {
+      return site.id;
+    }
+  }
+  return null;
+}
+
+export function hostsForSiteId(siteId: string): string[] {
+  return DEFAULT_SITES.find((s) => s.id === siteId)?.hosts ?? [];
+}
+
+export function todayKey(date = new Date()): string {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  const d = String(date.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
+export function yesterdayKey(date = new Date()): string {
+  const prior = new Date(date);
+  prior.setDate(prior.getDate() - 1);
+  return todayKey(prior);
+}
+</file>
+
+<file path="extension/src/shared/fixture.ts">
+import type { GradeResult, InterventionPayload } from "./types";
+
+export const FIXTURE_INTERVENTION: InterventionPayload = {
+  id: "fixture-local",
+  title: "Attention is a practice, not a personality trait",
+  estimatedMinutes: 3,
+  usedFixture: true,
+  passageMarkdown: `Most people talk about focus as if it were a talent you either have or lack. A more useful frame is that attention is a **practice**: a set of small returns to a chosen target after the mind wanders.
+
+When you scroll a feed, the interface is designed to keep choosing the next target for you. That is not morally catastrophic, but it is cognitively cheap. You consume novelty without having to hold a goal, test an idea, or remember a structure. After enough of that, switching into reading, reasoning, or making something can feel oddly effortful — not because your brain is broken, but because you have been rehearsing a different skill.
+
+A short reading challenge is a way to rehearse the other skill on purpose. You pick a topic you already care about. You stay with one argument long enough to notice its shape. Then you check whether you understood it. None of this measures hidden brain networks. It measures something simpler and more honest: did you engage?
+
+Cognite exists for that switch. Skip whenever you want. The point is not restriction. The point is a voluntary invitation to **reignite your cognition** — to trade a few minutes of passive consumption for a few minutes of active comprehension.`,
+  questions: [
+    {
+      id: "q1",
+      prompt: "How does the passage describe attention?",
+      choices: [
+        { id: "a", text: "As a fixed talent some people are born with" },
+        { id: "b", text: "As a practice of returning to a chosen target" },
+        { id: "c", text: "As something that cannot be trained" },
+        { id: "d", text: "As identical to willpower" },
+      ],
+    },
+    {
+      id: "q2",
+      prompt: "According to the passage, why can feeds feel cognitively cheap?",
+      choices: [
+        { id: "a", text: "They require you to hold a long-term goal" },
+        { id: "b", text: "They force you to remember a structure" },
+        { id: "c", text: "They keep choosing the next target for you" },
+        { id: "d", text: "They block all novelty" },
+      ],
+    },
+    {
+      id: "q3",
+      prompt: "What does Cognite claim to measure in this MVP?",
+      choices: [
+        { id: "a", text: "Executive Control Network activity" },
+        { id: "b", text: "Default Mode Network activity" },
+        { id: "c", text: "Observable engagement, such as reading and comprehension" },
+        { id: "d", text: "Sleep quality" },
+      ],
+    },
+    {
+      id: "q4",
+      prompt: "What is the product’s stance on skipping an intervention?",
+      choices: [
+        { id: "a", text: "Skipping should be impossible" },
+        { id: "b", text: "Skipping is allowed; the invitation is voluntary" },
+        { id: "c", text: "Skipping deletes your score" },
+        { id: "d", text: "Skipping is required after three minutes" },
+      ],
+    },
+  ],
+};
+
+const FIXTURE_ANSWERS: Record<string, string> = {
+  q1: "b",
+  q2: "c",
+  q3: "c",
+  q4: "b",
+};
+
+export function gradeFixture(answers: Record<string, string>): GradeResult {
+  const perQuestion = FIXTURE_INTERVENTION.questions.map((q) => {
+    const correctChoiceId = FIXTURE_ANSWERS[q.id];
+    return {
+      questionId: q.id,
+      correct: answers[q.id] === correctChoiceId,
+      correctChoiceId,
+    };
+  });
+  const correctCount = perQuestion.filter((p) => p.correct).length;
+  const total = perQuestion.length;
+  const scorePct = total ? Math.round((100 * correctCount) / total) : 0;
+  const xpAwarded = 20 + Math.round(15 * (correctCount / Math.max(total, 1)));
+  return { scorePct, correctCount, total, perQuestion, xpAwarded };
+}
+</file>
+
+<file path="extension/src/shared/messages.ts">
+import type { GradeResult, LiveStatus } from "./types";
+
+export type ExtensionMessage =
+  | { type: "GET_STATUS" }
+  | { type: "STATUS"; payload: LiveStatus }
+  | {
+      type: "THRESHOLD_REACHED";
+      payload: { siteId: string; minutes: number; durationMinutes: number };
+    }
+  | { type: "SKIP_INTERVENTION"; payload: { siteId: string } }
+  | { type: "START_INTERVENTION"; payload: { siteId: string } }
+  | {
+      type: "INTERVENTION_COMPLETE";
+      payload: {
+        siteId: string | null;
+        skipped: boolean;
+        grade: GradeResult | null;
+        title: string | null;
+        passageMarkdown: string | null;
+        usedFixture: boolean;
+      };
+    }
+  | { type: "SETTINGS_UPDATED" };
+
+export function isMessage(value: unknown): value is ExtensionMessage {
+  return Boolean(
+    value &&
+      typeof value === "object" &&
+      "type" in value &&
+      typeof (value as { type: unknown }).type === "string",
+  );
+}
+</file>
+
+<file path="extension/src/shared/scoring.ts">
+import { todayKey, yesterdayKey } from "./constants";
+import type { GradeResult, Progress, SessionRecord } from "./types";
+
+const COMPLETE_XP = 20;
+const COMPLETE_REPEAT_XP = 10;
+const ACCURACY_XP_MAX = 15;
+const STREAK_XP = 5;
+const MAX_SESSIONS = 20;
+
+export function applyCompletion(progress: Progress, input: {
+  skipped: boolean;
+  grade: GradeResult | null;
+  siteId: string | null;
+  title: string | null;
+  passageMarkdown: string | null;
+  usedFixture: boolean;
+}): { progress: Progress; xpDelta: number } {
+  const today = todayKey();
+  const next: Progress = { ...progress, sessions: [...progress.sessions] };
+
+  if (next.completionsTodayDate !== today) {
+    next.completionsToday = 0;
+    next.completionsTodayDate = today;
+  }
+
+  let xpDelta = 0;
+  let accuracy: number | null = null;
+
+  if (input.skipped) {
+    xpDelta = 0;
+  } else if (input.grade) {
+    accuracy = input.grade.total
+      ? input.grade.correctCount / input.grade.total
+      : 0;
+    const baseComplete =
+      next.completionsToday >= 1 ? COMPLETE_REPEAT_XP : COMPLETE_XP;
+    const accuracyXp = Math.round(
+      ACCURACY_XP_MAX * (input.grade.correctCount / Math.max(input.grade.total, 1)),
+    );
+    xpDelta = baseComplete + accuracyXp;
+
+    const last = next.lastCompletionDate;
+    if (last === yesterdayKey() || last === today) {
+      if (last === yesterdayKey()) {
+        next.streak = (next.streak || 0) + 1;
+        xpDelta += STREAK_XP;
+      }
+    } else {
+      next.streak = 1;
+    }
+
+    next.lastCompletionDate = today;
+    next.completionsToday += 1;
+    next.lastPassageTitle = input.title;
+    next.lastPassageMarkdown = input.passageMarkdown;
+  }
+
+  next.xp += xpDelta;
+  next.cognitiveScore += xpDelta;
+
+  const session: SessionRecord = {
+    timestamp: Date.now(),
+    skipped: input.skipped,
+    accuracy,
+    xp: xpDelta,
+    siteId: input.siteId,
+    usedFixture: input.usedFixture,
+  };
+  next.sessions = [session, ...next.sessions].slice(0, MAX_SESSIONS);
+
+  return { progress: next, xpDelta };
+}
+</file>
+
+<file path="extension/src/shared/storage.ts">
+import {
+  DEFAULT_SITES,
+  INTERESTS,
+  todayKey,
+  type Interest,
+} from "./constants";
+import type { Progress, Settings, StoredState, TimerState } from "./types";
+
+const STORAGE_KEY = "cognite";
+
+function uuid(): string {
+  if (typeof crypto !== "undefined" && crypto.randomUUID) {
+    return crypto.randomUUID();
+  }
+  return `id-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+export function defaultSettings(): Settings {
+  return {
+    onboardingComplete: false,
+    interests: [...INTERESTS] as Interest[],
+    durationMinutes: 4,
+    thresholdMinutes: 1,
+    enabledSiteIds: DEFAULT_SITES.map((s) => s.id),
+  };
+}
+
+export function defaultProgress(): Progress {
+  return {
+    installId: uuid(),
+    cognitiveScore: 0,
+    xp: 0,
+    streak: 0,
+    lastCompletionDate: null,
+    completionsToday: 0,
+    completionsTodayDate: todayKey(),
+    sessions: [],
+    lastPassageTitle: null,
+    lastPassageMarkdown: null,
+  };
+}
+
+export function defaultTimer(): TimerState {
+  return {
+    date: todayKey(),
+    perSiteMs: {},
+    lastTick: null,
+    lastSiteId: null,
+    overlayShownSiteIds: [],
+  };
+}
+
+export async function loadState(): Promise<StoredState> {
+  const raw = await chrome.storage.local.get(STORAGE_KEY);
+  const stored = raw[STORAGE_KEY] as Partial<StoredState> | undefined;
+  return {
+    settings: { ...defaultSettings(), ...stored?.settings },
+    progress: { ...defaultProgress(), ...stored?.progress },
+    timer: { ...defaultTimer(), ...stored?.timer },
+  };
+}
+
+export async function saveState(state: StoredState): Promise<void> {
+  await chrome.storage.local.set({ [STORAGE_KEY]: state });
+}
+
+export async function patchState(
+  patcher: (state: StoredState) => StoredState | void,
+): Promise<StoredState> {
+  const state = await loadState();
+  const next = patcher(state) ?? state;
+  await saveState(next);
+  return next;
+}
+</file>
+
+<file path="extension/src/shared/types.ts">
+import type { DurationMinutes, Interest, ThresholdMinutes } from "./constants";
+
+export type SessionRecord = {
+  timestamp: number;
+  skipped: boolean;
+  accuracy: number | null;
+  xp: number;
+  siteId: string | null;
+  usedFixture: boolean;
+};
+
+export type Settings = {
+  onboardingComplete: boolean;
+  interests: Interest[];
+  durationMinutes: DurationMinutes;
+  thresholdMinutes: ThresholdMinutes;
+  enabledSiteIds: string[];
+};
+
+export type Progress = {
+  installId: string;
+  cognitiveScore: number;
+  xp: number;
+  streak: number;
+  lastCompletionDate: string | null;
+  completionsToday: number;
+  completionsTodayDate: string;
+  sessions: SessionRecord[];
+  lastPassageTitle: string | null;
+  lastPassageMarkdown: string | null;
+};
+
+export type TimerState = {
+  date: string;
+  perSiteMs: Record<string, number>;
+  lastTick: number | null;
+  lastSiteId: string | null;
+  overlayShownSiteIds: string[];
+};
+
+export type StoredState = {
+  settings: Settings;
+  progress: Progress;
+  timer: TimerState;
+};
+
+export type LiveStatus = {
+  settings: Settings;
+  progress: Progress;
+  activeSiteId: string | null;
+  activeSiteMs: number;
+  remainingMs: number | null;
+  overlayPending: boolean;
+};
+
+export type QuizChoice = {
+  id: string;
+  text: string;
+};
+
+export type QuizQuestion = {
+  id: string;
+  prompt: string;
+  choices: QuizChoice[];
+};
+
+export type InterventionPayload = {
+  id: string;
+  title: string;
+  passageMarkdown: string;
+  estimatedMinutes: number;
+  questions: QuizQuestion[];
+  usedFixture: boolean;
+};
+
+export type GradeResult = {
+  scorePct: number;
+  correctCount: number;
+  total: number;
+  perQuestion: { questionId: string; correct: boolean; correctChoiceId: string }[];
+  xpAwarded: number;
+};
+</file>
+
+<file path="extension/src/shared/ui.css">
+:root {
+  color-scheme: dark;
+  --bg: #14110e;
+  --bg-elev: #1e1914;
+  --bg-soft: #2a231c;
+  --ink: #f4ece2;
+  --muted: #b9a894;
+  --line: rgba(244, 236, 226, 0.12);
+  --ember: #e08a3c;
+  --ember-2: #f0c07a;
+  --good: #8fce7a;
+  --bad: #e07a6a;
+  --shadow: 0 18px 50px rgba(0, 0, 0, 0.35);
+  font-family: "Iowan Old Style", "Palatino Linotype", Palatino, "Times New Roman", serif;
+}
+
+* { box-sizing: border-box; }
+
+html, body, #root {
+  margin: 0;
+  min-height: 100%;
+  background: radial-gradient(1200px 600px at 10% -10%, #3a2416 0%, var(--bg) 45%);
+  color: var(--ink);
+}
+
+body {
+  font-size: 16px;
+  line-height: 1.5;
+}
+
+button, input, select {
+  font: inherit;
+}
+
+h1, h2, h3, .sans {
+  font-family: "Avenir Next", "Segoe UI", sans-serif;
+  letter-spacing: 0.01em;
+}
+
+a { color: var(--ember-2); }
+
+.wrap {
+  width: min(760px, calc(100% - 32px));
+  margin: 0 auto;
+  padding: 28px 0 48px;
+}
+
+.kicker {
+  font-family: "Avenir Next", "Segoe UI", sans-serif;
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+  font-size: 11px;
+  color: var(--ember-2);
+  margin: 0 0 8px;
+}
+
+.card {
+  background: var(--bg-elev);
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  padding: 20px;
+  box-shadow: var(--shadow);
+}
+
+.row {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.btn {
+  border: 0;
+  border-radius: 999px;
+  padding: 10px 16px;
+  cursor: pointer;
+  background: var(--ember);
+  color: #1a120c;
+  font-weight: 650;
+}
+
+.btn.secondary {
+  background: transparent;
+  color: var(--ink);
+  border: 1px solid var(--line);
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.chip {
+  border: 1px solid var(--line);
+  background: var(--bg-soft);
+  color: var(--ink);
+  border-radius: 999px;
+  padding: 8px 12px;
+  cursor: pointer;
+}
+
+.chip.on {
+  border-color: var(--ember);
+  background: rgba(224, 138, 60, 0.18);
+}
+
+.muted { color: var(--muted); }
+.score { font-size: 40px; margin: 0; font-family: "Avenir Next", "Segoe UI", sans-serif; }
+
+.choice {
+  display: block;
+  width: 100%;
+  text-align: left;
+  margin: 8px 0;
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: var(--bg-soft);
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.choice.selected { border-color: var(--ember); }
+.choice.correct { border-color: var(--good); }
+.choice.wrong { border-color: var(--bad); }
+
+.passage p { margin: 0 0 1em; }
+.passage strong { color: var(--ember-2); }
+</file>
+
+<file path="extension/src/vite-env.d.ts">
+/// <reference types="vite/client" />
+
+interface ImportMetaEnv {
+  readonly VITE_COGNITE_API_KEY?: string;
+}
+
+interface ImportMeta {
+  readonly env: ImportMetaEnv;
+}
+</file>
+
+<file path="extension/intervention.html">
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Cognite · Reading challenge</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/intervention/main.tsx"></script>
+  </body>
+</html>
+</file>
+
+<file path="extension/manifest.config.ts">
+import { defineManifest } from "@crxjs/vite-plugin";
+
+const TRACKED_MATCHES = [
+  "*://*.youtube.com/*",
+  "*://youtube.com/*",
+  "*://*.x.com/*",
+  "*://x.com/*",
+  "*://*.twitter.com/*",
+  "*://twitter.com/*",
+  "*://*.reddit.com/*",
+  "*://reddit.com/*",
+  "*://*.instagram.com/*",
+  "*://instagram.com/*",
+  "*://*.tiktok.com/*",
+  "*://tiktok.com/*",
+  "*://*.facebook.com/*",
+  "*://facebook.com/*",
+  "*://*.netflix.com/*",
+  "*://netflix.com/*",
+];
+
+export const manifest = defineManifest({
+  manifest_version: 3,
+  name: "Cognite",
+  version: "0.1.0",
+  description: "Reignite your cognition with short, voluntary reading challenges.",
+  action: {
+    default_popup: "popup.html",
+    default_title: "Cognite",
+  },
+  options_page: "options.html",
+  background: {
+    service_worker: "src/background/index.ts",
+    type: "module",
+  },
+  permissions: ["storage", "tabs", "alarms"],
+  host_permissions: [
+    "http://127.0.0.1:8000/*",
+    "http://localhost:8000/*",
+    ...TRACKED_MATCHES,
+  ],
+  content_scripts: [
+    {
+      matches: TRACKED_MATCHES,
+      js: ["src/content/index.ts"],
+      run_at: "document_idle",
+    },
+  ],
+  web_accessible_resources: [
+    {
+      resources: ["intervention.html"],
+      matches: TRACKED_MATCHES,
+    },
+  ],
+});
+</file>
+
+<file path="extension/options.html">
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Cognite settings</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/options/main.tsx"></script>
+  </body>
+</html>
+</file>
+
+<file path="extension/package.json">
+{
+  "name": "cognite-extension",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@crxjs/vite-plugin": "2.0.0-beta.28",
+    "@types/chrome": "^0.0.287",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.11"
+  }
+}
+</file>
+
+<file path="extension/popup.html">
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Cognite</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/popup/main.tsx"></script>
+  </body>
+</html>
+</file>
+
+<file path="extension/tsconfig.json">
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "useDefineForClassFields": true,
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "skipLibCheck": true,
+    "moduleResolution": "bundler",
+    "isolatedModules": true,
+    "moduleDetection": "force",
+    "noEmit": true,
+    "jsx": "react-jsx",
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "resolveJsonModule": true,
+    "types": ["chrome", "vite/client"]
+  },
+  "include": ["src", "vite.config.ts", "manifest.config.ts"]
+}
+</file>
+
+<file path="extension/vite.config.ts">
+import { defineConfig } from "vite";
+import react from "@vitejs/plugin-react";
+import { crx } from "@crxjs/vite-plugin";
+import { manifest } from "./manifest.config";
+
+export default defineConfig({
+  plugins: [react(), crx({ manifest })],
+  build: {
+    rollupOptions: {
+      input: {
+        intervention: "intervention.html",
+      },
+    },
+  },
+});
+</file>
+
+<file path=".env.example">
+OPENAI_API_KEY=sk-your-key-here
+# Optional. If set, the API requires this value in the X-Cognite-Key header.
+COGNITE_API_KEY=
+</file>
+
+<file path=".gitignore">
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+
+# Diagnostic reports (https://nodejs.org/api/report.html)
+report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
+
+# Runtime data
+pids
+*.pid
+*.seed
+*.pid.lock
+
+# Coverage
+coverage
+*.lcov
+.nyc_output
+
+# Dependencies
+node_modules/
+jspm_packages/
+
+# TypeScript cache
+*.tsbuildinfo
+
+# Optional caches
+.npm
+.eslintcache
+.stylelintcache
+
+# dotenv
+.env
+.env.*
+!.env.example
+
+# Build
+dist
+.output
+.vite/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+.venv/
+venv/
+env/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Chroma local index
+api/data/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode-test
+</file>
+
+<file path="README.md">
+# Cognite
+
+**Reignite your cognition.**
+
+Cognite is a Chrome extension that watches time on sites you choose (YouTube, Reddit, and similar), then offers a **voluntary** 3–5 minute reading challenge with a short quiz. It is inspired by the idea of switching from long stretches of passive consumption into more active reading. It does **not** measure brain networks, and it does not block pages.
+
+This repository is the two-week MVP: a Manifest V3 React/TypeScript extension plus a FastAPI service that generates readings with OpenAI and a small RAG knowledge base.
+
+## What you can do in the MVP
+
+1. Load the unpacked extension and finish onboarding (interests, duration, site list).
+2. Browse an enabled site until the time threshold is reached (default **1 minute** for demos).
+3. Start or skip the prompt. Skipping never traps you on the page.
+4. Read a grounded passage, take a quiz, and earn XP / Cognitive Score.
+5. See score, streak, and last session in the popup.
+
+If the API is down, the intervention page falls back to a local sample reading.
+
+## Repository layout
+
+- `extension/` — Chrome MV3 extension (Vite, React, TypeScript, CRXJS)
+- `api/` — FastAPI app, RAG pipeline, and `knowledge/` corpus
+- `api/knowledge/` — tagged markdown used for retrieval (technology, science, history, philosophy, arts)
+
+## Prerequisites
+
+- Node 20+
+- Python 3.11+
+- Google Chrome
+- An OpenAI API key (chat + embeddings)
+
+## 1. Run the API
+
+```bash
+cd api
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env
+# put OPENAI_API_KEY in api/.env
+python scripts/ingest.py
+uvicorn app.main:app --reload --port 8000
+```
+
+- Health: `GET http://127.0.0.1:8000/health`
+- Generate: `POST /v1/interventions` with `{ "interests": ["science"], "durationMinutes": 4 }`
+- Grade: `POST /v1/interventions/{id}/grade` with `{ "answers": { "q1": "b" } }`
+
+Correct answers stay on the server. Re-run `python scripts/ingest.py` after you edit `knowledge/`.
+
+Optional: set `COGNITE_API_KEY` in `api/.env` and `VITE_COGNITE_API_KEY` when building the extension so requests send `X-Cognite-Key`.
+
+## 2. Build and load the extension
+
+```bash
+cd extension
+npm install
+npm run build
+```
+
+In Chrome: `chrome://extensions` → enable Developer mode → **Load unpacked** → select `extension/dist`.
+
+For a faster loop while changing UI, `npm run dev` from `extension/` also works with CRXJS; load the `dist` folder it writes.
+
+## Demo script
+
+1. Open the extension **Settings** (first install opens them) and save. Leave the threshold on **1 min (demo)** unless you want 10/15/20.
+2. Keep the API running.
+3. Open YouTube or Reddit and stay on the tab for about a minute.
+4. Use **Start reading** (or **Practice now** in the popup).
+5. Complete the quiz. Confirm XP and Cognitive Score in the popup.
+
+## Scoring (behavioral, local)
+
+Stored only in `chrome.storage.local`. The API never receives the site URL.
+
+- Complete a quiz: +20 XP (later the same day: +10)
+- Accuracy: +0–15 from `round(15 * correct / total)`
+- Continuing a daily streak: +5
+- Skip: +0
+
+## Privacy
+
+The content script runs only on the default high-distraction hosts. Cognite counts time on **sites you enabled**. It does not scrape page content and does not claim to measure ECN, DMN, or any neural signal.
+</file>
+
+</files>
