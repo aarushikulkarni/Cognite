@@ -1,4 +1,9 @@
 export const INTERESTS = [
+  "mystery",
+  "horror",
+  "scifi",
+  "romance",
+  "fantasy",
   "technology",
   "science",
   "history",
@@ -9,11 +14,16 @@ export const INTERESTS = [
 export type Interest = (typeof INTERESTS)[number];
 
 export const INTEREST_LABELS: Record<Interest, string> = {
+  mystery: "Mystery (Sherlock & Poe)",
+  horror: "Horror & Gothic",
+  scifi: "Sci-Fi Classics",
+  romance: "Original Romance",
+  fantasy: "Fantasy & Wonder",
   technology: "Technology",
   science: "Science",
   history: "History",
   philosophy: "Philosophy",
-  arts: "Arts",
+  arts: "Arts & Aesthetics",
 };
 
 export const DURATION_OPTIONS = [3, 4, 5] as const;

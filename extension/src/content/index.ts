@@ -4,6 +4,23 @@ import type { LiveStatus } from "../shared/types";
 
 const ROOT_ID = "cognite-overlay-root";
 
+function safeSendMessage<T>(message: ExtensionMessage): Promise<T | undefined> {
+  return new Promise((resolve) => {
+    if (!chrome.runtime?.id) {
+      resolve(undefined);
+      return;
+    }
+
+    chrome.runtime.sendMessage(message, (response) => {
+      if (chrome.runtime.lastError) {
+        resolve(undefined);
+        return;
+      }
+      resolve(response as T | undefined);
+    });
+  });
+}
+
 function siteLabel(siteId: string): string {
   return DEFAULT_SITES.find((s) => s.id === siteId)?.label ?? siteId;
 }
@@ -87,7 +104,7 @@ function showOverlay(payload: { siteId: string; minutes: number; durationMinutes
       type: "START_INTERVENTION",
       payload: { siteId: payload.siteId },
     };
-    void chrome.runtime.sendMessage(msg);
+    void safeSendMessage(msg);
   };
   skip.onclick = () => {
     panel.classList.remove("open");
@@ -95,16 +112,17 @@ function showOverlay(payload: { siteId: string; minutes: number; durationMinutes
       type: "SKIP_INTERVENTION",
       payload: { siteId: payload.siteId },
     };
-    void chrome.runtime.sendMessage(msg);
+    void safeSendMessage(msg);
   };
 }
 
 chrome.runtime.onMessage.addListener((raw) => {
+  if (!chrome.runtime?.id) return;
   if (!isMessage(raw) || raw.type !== "THRESHOLD_REACHED") return;
   showOverlay(raw.payload);
 });
 
-void chrome.runtime.sendMessage({ type: "GET_STATUS" }).then((status: LiveStatus) => {
+void safeSendMessage<LiveStatus>({ type: "GET_STATUS" }).then((status) => {
   if (!status?.overlayPending || !status.activeSiteId) return;
   const minutes = Math.max(1, Math.round(status.activeSiteMs / 60_000));
   showOverlay({

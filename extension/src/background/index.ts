@@ -124,7 +124,8 @@ function resetSiteTimer(state: StoredState, siteId: string) {
   state.timer.perSiteMs = rest;
   state.timer.overlayShownSiteIds = state.timer.overlayShownSiteIds.filter((id) => id !== siteId);
   if (state.timer.lastSiteId === siteId) {
-    state.timer.lastTick = Date.now();
+    state.timer.lastSiteId = null;
+    state.timer.lastTick = null;
   }
 }
 

@@ -6,6 +6,15 @@ import type { GradeResult, InterventionPayload } from "../shared/types";
 
 type Phase = "loading" | "reading" | "quiz" | "results";
 
+async function safeRuntimeSendMessage<T>(message: unknown): Promise<T | undefined> {
+  if (!chrome.runtime?.id) return undefined;
+  try {
+    return (await chrome.runtime.sendMessage(message)) as T | undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function renderMarkdown(md: string): string {
   const escaped = md
     .replace(/&/g, "&amp;")
@@ -52,7 +61,7 @@ export function InterventionApp() {
   );
 
   async function skip() {
-    await chrome.runtime.sendMessage({
+    await safeRuntimeSendMessage({
       type: "INTERVENTION_COMPLETE",
       payload: {
         siteId,
@@ -78,7 +87,7 @@ export function InterventionApp() {
         result = await gradeIntervention(item.id, answers);
       }
       setGrade(result);
-      const progress = await chrome.runtime.sendMessage({
+      const progress = await safeRuntimeSendMessage<{ xp?: number }>({
         type: "INTERVENTION_COMPLETE",
         payload: {
           siteId,
@@ -89,7 +98,7 @@ export function InterventionApp() {
           usedFixture: item.usedFixture,
         },
       });
-      setXp(progress?.sessions?.[0]?.xp ?? result.xpAwarded);
+      setXp(progress?.xp ?? result.xpAwarded);
       setPhase("results");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not grade the quiz.");

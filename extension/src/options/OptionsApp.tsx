@@ -57,7 +57,11 @@ export function OptionsApp() {
     await patchState((state) => {
       state.settings = { ...settings, onboardingComplete: true };
     });
-    await chrome.runtime.sendMessage({ type: "SETTINGS_UPDATED" });
+    try {
+      await chrome.runtime.sendMessage({ type: "SETTINGS_UPDATED" });
+    } catch {
+      // Ignore invalidated extension contexts while Chrome is tearing down the extension page.
+    }
     setSaved(true);
   }
 

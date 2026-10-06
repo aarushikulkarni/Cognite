@@ -1,6 +1,17 @@
 from app.rag.ingest import get_collection
 
-VALID_TAGS = {"technology", "science", "history", "philosophy", "arts"}
+VALID_TAGS = {
+    "mystery",
+    "horror",
+    "scifi",
+    "romance",
+    "fantasy",
+    "technology",
+    "science",
+    "history",
+    "philosophy",
+    "arts",
+}
 
 
 def retrieve(interests: list[str], k: int = 4) -> list[dict[str, str]]:
