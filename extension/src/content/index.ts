@@ -4,6 +4,10 @@ import type { LiveStatus } from "../shared/types";
 
 const ROOT_ID = "cognite-overlay-root";
 
+function getOverlayParent(): Element {
+  return document.fullscreenElement || document.body;
+}
+
 function safeSendMessage<T>(message: ExtensionMessage): Promise<T | undefined> {
   return new Promise((resolve) => {
     if (!chrome.runtime?.id) {
@@ -27,7 +31,11 @@ function siteLabel(siteId: string): string {
 
 function ensureOverlay(): HTMLDivElement {
   const existing = document.getElementById(ROOT_ID) as HTMLDivElement | null;
-  if (existing) return existing;
+  if (existing) {
+    const parent = getOverlayParent();
+    if (existing.parentElement !== parent) parent.appendChild(existing);
+    return existing;
+  }
   const host = document.createElement("div");
   host.id = ROOT_ID;
   host.style.all = "initial";
@@ -35,7 +43,7 @@ function ensureOverlay(): HTMLDivElement {
   host.style.zIndex = "2147483646";
   host.style.right = "16px";
   host.style.bottom = "16px";
-  document.documentElement.appendChild(host);
+  getOverlayParent().appendChild(host);
   const shadow = host.attachShadow({ mode: "open" });
   shadow.innerHTML = `
     <style>
@@ -120,6 +128,11 @@ chrome.runtime.onMessage.addListener((raw) => {
   if (!chrome.runtime?.id) return;
   if (!isMessage(raw) || raw.type !== "THRESHOLD_REACHED") return;
   showOverlay(raw.payload);
+});
+
+document.addEventListener("fullscreenchange", () => {
+  const host = document.getElementById(ROOT_ID);
+  if (host) getOverlayParent().appendChild(host);
 });
 
 void safeSendMessage<LiveStatus>({ type: "GET_STATUS" }).then((status) => {

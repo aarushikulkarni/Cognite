@@ -12,6 +12,8 @@ class Settings(BaseSettings):
 
     openai_api_key: str = ""
     cognite_api_key: str = ""
+    jwt_secret_key: str = ""
+    jwt_access_token_minutes: int = 60
     openai_chat_model: str = "gpt-4o-mini"
     openai_embedding_model: str = "text-embedding-3-small"
 

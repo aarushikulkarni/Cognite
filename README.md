@@ -38,13 +38,16 @@ source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
 # put OPENAI_API_KEY in api/.env
+# set JWT_SECRET_KEY to a long, random secret (at least 32 bytes)
 python scripts/ingest.py
 uvicorn app.main:app --reload --port 8000
 ```
 
 - Health: `GET http://127.0.0.1:8000/health`
-- Generate: `POST /v1/interventions` with `{ "interests": ["science"], "durationMinutes": 4 }`
-- Grade: `POST /v1/interventions/{id}/grade` with `{ "answers": { "q1": "b" } }`
+- Register: `POST /auth/register` with `{ "email": "reader@example.com", "password": "a-long-password" }`
+- Login: `POST /auth/login` with the same fields; both auth endpoints return a bearer token
+- Generate: `POST /v1/interventions` with `{ "interests": ["science"], "durationMinutes": 4 }` and `Authorization: Bearer <access_token>`
+- Grade: `POST /v1/interventions/{id}/grade` with `{ "answers": { "q1": "b" } }` and the same bearer token
 
 Correct answers stay on the server. Re-run `python scripts/ingest.py` after you edit `knowledge/`.
 

@@ -1,4 +1,35 @@
-from pydantic import BaseModel, ConfigDict, Field
+from typing import Optional
+
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
+
+
+class RegisterRequest(BaseModel):
+    email: EmailStr
+    password: str = Field(min_length=8, max_length=128)
+
+    @field_validator("password")
+    @classmethod
+    def validate_password_bytes(cls, password: str) -> str:
+        if len(password.encode("utf-8")) > 72:
+            raise ValueError("Password must be at most 72 UTF-8 bytes")
+        return password
+
+
+class LoginRequest(BaseModel):
+    email: EmailStr
+    password: str = Field(min_length=1, max_length=128)
+
+    @field_validator("password")
+    @classmethod
+    def validate_password_bytes(cls, password: str) -> str:
+        if len(password.encode("utf-8")) > 72:
+            raise ValueError("Password must be at most 72 UTF-8 bytes")
+        return password
+
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
 
 
 class GenerateRequest(BaseModel):
@@ -31,6 +62,9 @@ class GenerateResponse(BaseModel):
 
 class GradeRequest(BaseModel):
     answers: dict[str, str]
+    completion_time_ms: Optional[int] = Field(default=None, alias="completionTimeMs", ge=0)
+
+    model_config = ConfigDict(populate_by_name=True)
 
 
 class PerQuestion(BaseModel):
