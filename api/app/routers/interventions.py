@@ -1,8 +1,11 @@
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.auth import get_current_user
+from app.bandit import select_optimal_category
 from app.database import get_db
 from app.models import InterventionLog, User
 from app.schemas import (
@@ -11,6 +14,8 @@ from app.schemas import (
     GenerateResponse,
     GradeRequest,
     GradeResponse,
+    InterventionLogCreate,
+    InterventionLogResponse,
     PerQuestion,
     Question,
 )
@@ -35,20 +40,30 @@ def create_intervention(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> GenerateResponse:
+    available_categories = [interest for interest in body.interests if interest in VALID_CATEGORIES]
+    if body.category is not None:
+        if body.category not in VALID_CATEGORIES:
+            raise HTTPException(status_code=422, detail="Invalid category")
+        category = body.category
+    else:
+        if not available_categories:
+            raise HTTPException(status_code=422, detail="No valid interest categories were provided")
+        category = select_optimal_category(db, user.id, available_categories)
+
     try:
-        item = generate_intervention(body.interests, body.duration_minutes)
+        item = generate_intervention([category], body.duration_minutes)
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"Generation failed: {exc}") from exc
 
-    category = next((interest for interest in body.interests if interest in VALID_CATEGORIES), body.interests[0])
-    mode = "romance" if category == "romance" else "classic_fiction" if category in CLASSIC_FICTION_TAGS else "factual_rag"
+    mode = "generative" if category == "romance" else "classic" if category in CLASSIC_FICTION_TAGS else "rag"
     db.add(
         InterventionLog(
             user_id=user.id,
             category=category,
             mode=mode,
+            completion_time_ms=0,
             intervention_id=item.id,
         )
     )
@@ -67,6 +82,55 @@ def create_intervention(
             )
             for q in item.questions
         ],
+    )
+
+
+@router.post("/log", response_model=InterventionLogResponse, status_code=201)
+def create_intervention_log(
+    body: InterventionLogCreate,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> InterventionLogResponse:
+    log = None
+    if body.intervention_id:
+        log = db.scalar(
+            select(InterventionLog).where(
+                InterventionLog.intervention_id == body.intervention_id,
+            )
+        )
+        if log is not None and log.user_id != user.id:
+            raise HTTPException(status_code=404, detail="Intervention not found")
+
+    if log is None:
+        log = InterventionLog(
+            user_id=user.id,
+            category=body.category,
+            mode=body.mode,
+            quiz_score=body.quiz_score,
+            completion_time_ms=body.completion_time_ms,
+            skipped=body.skipped,
+            timestamp=datetime.now(timezone.utc),
+            intervention_id=body.intervention_id,
+        )
+        db.add(log)
+    else:
+        log.category = body.category
+        log.mode = body.mode
+        log.quiz_score = body.quiz_score
+        log.completion_time_ms = body.completion_time_ms
+        log.skipped = body.skipped
+        log.timestamp = datetime.now(timezone.utc)
+
+    db.commit()
+    db.refresh(log)
+    return InterventionLogResponse(
+        id=log.id,
+        userId=log.user_id,
+        category=log.category,
+        mode=log.mode,
+        quizScore=log.quiz_score,
+        completionTimeMs=log.completion_time_ms,
+        skipped=log.skipped,
     )
 
 
@@ -105,7 +169,8 @@ def grade_intervention(
     pct = round(100 * correct / total) if total else 0
     xp = 20 + round(15 * (correct / total)) if total else 20
     log.quiz_score = pct
-    log.completion_time_ms = body.completion_time_ms
+    if body.completion_time_ms is not None:
+        log.completion_time_ms = body.completion_time_ms
     db.commit()
     return GradeResponse(
         scorePct=pct,

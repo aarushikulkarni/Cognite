@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.auth import create_access_token, hash_password, verify_password
 from app.config import settings
-from app.database import Base, engine, get_db
+from app.database import Base, engine, get_db, migrate_legacy_user_ids
 from app.models import User
 from app.schemas import LoginRequest, RegisterRequest, TokenResponse
 from app.routers.interventions import router as interventions_router
@@ -17,6 +17,7 @@ from app.routers.interventions import router as interventions_router
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    migrate_legacy_user_ids()
     Base.metadata.create_all(bind=engine)
     yield
 

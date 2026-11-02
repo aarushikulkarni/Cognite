@@ -24,11 +24,11 @@ def verify_password(password: str, hashed_password: str) -> bool:
     return password_context.verify(password, hashed_password)
 
 
-def create_access_token(user_id: str) -> str:
+def create_access_token(user_id: int) -> str:
     if not settings.jwt_secret_key:
         raise RuntimeError("JWT_SECRET_KEY is not set")
     expires_at = datetime.now(timezone.utc) + timedelta(minutes=settings.jwt_access_token_minutes)
-    return jwt.encode({"sub": user_id, "exp": expires_at}, settings.jwt_secret_key, algorithm=ALGORITHM)
+    return jwt.encode({"sub": str(user_id), "exp": expires_at}, settings.jwt_secret_key, algorithm=ALGORITHM)
 
 
 def get_current_user(
@@ -44,10 +44,13 @@ def get_current_user(
         raise HTTPException(status_code=503, detail="JWT_SECRET_KEY is not configured")
     try:
         payload = jwt.decode(token, settings.jwt_secret_key, algorithms=[ALGORITHM])
-        user_id = payload.get("sub")
-        if not isinstance(user_id, str):
+        subject = payload.get("sub")
+        if not isinstance(subject, str):
             raise unauthorized
+        user_id = int(subject)
     except jwt.InvalidTokenError as exc:
+        raise unauthorized from exc
+    except ValueError as exc:
         raise unauthorized from exc
 
     user = db.get(User, user_id)

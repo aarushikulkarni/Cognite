@@ -1,6 +1,6 @@
 from typing import Optional
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
 
 
 class RegisterRequest(BaseModel):
@@ -35,6 +35,7 @@ class TokenResponse(BaseModel):
 class GenerateRequest(BaseModel):
     interests: list[str] = Field(min_length=1)
     duration_minutes: int = Field(alias="durationMinutes", ge=3, le=5)
+    category: Optional[str] = Field(default=None, min_length=1, max_length=64)
 
     model_config = ConfigDict(populate_by_name=True, serialize_by_alias=True)
 
@@ -65,6 +66,37 @@ class GradeRequest(BaseModel):
     completion_time_ms: Optional[int] = Field(default=None, alias="completionTimeMs", ge=0)
 
     model_config = ConfigDict(populate_by_name=True)
+
+
+class InterventionLogCreate(BaseModel):
+    category: str = Field(min_length=1, max_length=64)
+    mode: str = Field(min_length=1, max_length=32)
+    quiz_score: Optional[float] = Field(default=None, alias="quizScore", ge=0, le=100)
+    completion_time_ms: int = Field(alias="completionTimeMs", ge=0)
+    skipped: bool
+    intervention_id: Optional[str] = Field(default=None, alias="interventionId", min_length=1)
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    @model_validator(mode="after")
+    def validate_score_for_completion(self):
+        if self.skipped and self.quiz_score is not None:
+            raise ValueError("Skipped interventions cannot have a quiz score")
+        if not self.skipped and self.quiz_score is None:
+            raise ValueError("Completed interventions require a quiz score")
+        return self
+
+
+class InterventionLogResponse(BaseModel):
+    id: int
+    user_id: int = Field(alias="userId")
+    category: str
+    mode: str
+    quiz_score: Optional[float] = Field(alias="quizScore")
+    completion_time_ms: int = Field(alias="completionTimeMs")
+    skipped: bool
+
+    model_config = ConfigDict(populate_by_name=True, serialize_by_alias=True)
 
 
 class PerQuestion(BaseModel):
